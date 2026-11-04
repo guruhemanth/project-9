@@ -10,11 +10,17 @@ echo "=== Starting CaterConnect Ecosystem ==="
 fuser -k 4001/tcp 4002/tcp 4003/tcp 4004/tcp 4005/tcp 4006/tcp 8080/tcp 5173/tcp 5174/tcp 2>/dev/null || true
 sleep 1
 
-export APP_DATABASE_URL="postgresql://postgres:postgres@127.0.0.1:54322/caterconnect"
-export JWT_SECRET="super-secret-jwt-token-with-at-least-32-characters-long"
-export RAZORPAY_KEY_ID="rzp_test_placeholder_key"
-export RAZORPAY_KEY_SECRET="rzp_test_placeholder_secret"
-export RAZORPAY_WEBHOOK_SECRET="caterconnect_test_webhook_secret_key"
+# Fail fast if required environment variables are missing
+if [ -z "$JWT_SECRET" ]; then
+  echo "Error: JWT_SECRET environment variable is required (min 32 chars)."
+  echo "Load your local development environment via: export \$(grep -v '^#' .env | xargs)"
+  exit 1
+fi
+
+if [ -z "$DATABASE_URL" ] && [ -z "$APP_DATABASE_URL" ]; then
+  echo "Error: DATABASE_URL environment variable is required."
+  exit 1
+fi
 
 TSX="$DIR/node_modules/.bin/tsx"
 mkdir -p "$DIR/logs"
