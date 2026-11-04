@@ -150,4 +150,43 @@ describe('Caterer & Menu Service Integration', () => {
     expect(patchRes.statusCode).toBe(200);
     expect(patchRes.json().caterer.status).toBe('approved');
   });
+
+  it('allows admin to configure custom commission_pct and rejects non-admin', async () => {
+    const targetCatererId = 'd0000000-0000-0000-0000-000000000001';
+    // 1. Non-admin is rejected
+    const nonAdminRes = await app.inject({
+      method: 'PATCH',
+      url: `/api/caterers/${targetCatererId}`,
+      headers: {
+        'x-user-id': 'customer-uuid-0001',
+        'x-user-role': 'customer',
+      },
+      payload: {
+        commissionPct: 12.5,
+      },
+    });
+    expect(nonAdminRes.statusCode).toBe(403);
+
+    // 2. Admin successfully updates commission_pct
+    const adminRes = await app.inject({
+      method: 'PATCH',
+      url: `/api/caterers/${targetCatererId}`,
+      headers: {
+        'x-user-id': 'admin-uuid-0001',
+        'x-user-role': 'admin',
+      },
+      payload: {
+        commissionPct: 12.5,
+      },
+    });
+    expect(adminRes.statusCode).toBe(200);
+    expect(adminRes.json().caterer.commissionPct).toBe(12.5);
+
+    // 3. Verify in database
+    const q = await pgPool.query('SELECT commission_pct FROM caterer_svc.caterers WHERE id = $1', [targetCatererId]);
+    expect(Number(q.rows[0].commission_pct)).toBe(12.5);
+
+    // Reset back to default 15.00% for other test suites
+    await pgPool.query('UPDATE caterer_svc.caterers SET commission_pct = 15.00 WHERE id = $1', [targetCatererId]);
+  });
 });

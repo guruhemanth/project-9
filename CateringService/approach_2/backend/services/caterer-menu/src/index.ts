@@ -329,6 +329,43 @@ export function buildCatererServer() {
     });
   });
 
+  // Admin update caterer settings (e.g. commission_pct) - ADMIN GUARD
+  server.patch('/api/caterers/:id', async (req, reply) => {
+    const authUser = getAuthenticatedUser(req);
+    if (!authUser || authUser.role !== 'admin') {
+      return reply.status(403).send({ error: 'Forbidden: Admin access required' });
+    }
+
+    const { id } = req.params as { id: string };
+    const { commissionPct, commission_pct } = (req.body as any) || {};
+    const rate = commissionPct !== undefined ? commissionPct : commission_pct;
+
+    if (rate === undefined || typeof rate !== 'number' || rate < 0 || rate > 100) {
+      return reply.status(400).send({ error: 'Valid commission rate between 0 and 100 is required' });
+    }
+
+    const updateRes = await pgPool.query(
+      `UPDATE caterer_svc.caterers
+       SET commission_pct = $1, updated_at = NOW()
+       WHERE id = $2
+       RETURNING id, business_name, commission_pct, status`,
+      [rate, id]
+    );
+
+    if (updateRes.rows.length === 0) {
+      return reply.status(404).send({ error: 'Caterer not found' });
+    }
+
+    return reply.send({
+      caterer: {
+        id: updateRes.rows[0].id,
+        businessName: updateRes.rows[0].business_name,
+        commissionPct: parseFloat(updateRes.rows[0].commission_pct),
+        status: updateRes.rows[0].status,
+      },
+    });
+  });
+
   // Add menu package for caterer - OWNERSHIP GUARD
   server.post('/api/caterers/:id/packages', async (req, reply) => {
     const { id } = req.params as { id: string };

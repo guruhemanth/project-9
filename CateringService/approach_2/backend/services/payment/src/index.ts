@@ -38,6 +38,18 @@ export function buildPaymentServer() {
   server.register(fastifyHelmet, { contentSecurityPolicy: false });
   server.register(fastifyCors, buildCorsOptions(env.ALLOWED_ORIGINS, env.NODE_ENV));
 
+  // Register raw body parser to preserve exact byte-for-byte payload for HMAC verification
+  server.addContentTypeParser('application/json', { parseAs: 'buffer' }, (req, body: Buffer, done) => {
+    try {
+      const raw = body.toString('utf8');
+      (req as any).rawBody = raw;
+      const parsed = JSON.parse(raw);
+      done(null, parsed);
+    } catch (err: any) {
+      done(err, undefined);
+    }
+  });
+
   const razorpayKeyId = env.RAZORPAY_KEY_ID;
   const razorpayKeySecret = env.RAZORPAY_KEY_SECRET;
   const webhookSecret = env.RAZORPAY_WEBHOOK_SECRET;
@@ -203,7 +215,8 @@ export function buildPaymentServer() {
   });
 
   // Razorpay Webhook Handler
-  // Verifies HMAC SHA-256 signature using timing-safe comparison and idempotently updates booking to 'paid'
+  // Verifies HMAC SHA-256 signature over raw request body using timing-safe comparison,
+  // validates exact amount, and idempotently locks rows to prevent replay and race conditions
   server.post('/api/payments/webhook', async (req, reply) => {
     try {
       const signature = req.headers['x-razorpay-signature'] as string;
@@ -211,7 +224,8 @@ export function buildPaymentServer() {
         return reply.status(400).send({ error: 'Missing x-razorpay-signature header' });
       }
 
-      const rawBody = typeof req.body === 'string' ? req.body : JSON.stringify(req.body);
+      // Exact raw request body as received over the wire
+      const rawBody = (req as any).rawBody || (typeof req.body === 'string' ? req.body : JSON.stringify(req.body));
 
       // Verify HMAC-SHA256 signature with timingSafeEqual to prevent timing attacks
       const expectedSignature = crypto
@@ -235,58 +249,87 @@ export function buildPaymentServer() {
         const amountPaise = paymentEntity?.amount;
 
         if (orderId) {
-          // Find payment record
-          const pRes = await pgPool.query(
-            'SELECT * FROM pay_svc.payments WHERE razorpay_order_id = $1 LIMIT 1',
-            [orderId]
-          );
+          const client = await pgPool.connect();
+          try {
+            await client.query('BEGIN');
 
-          if (pRes.rows.length > 0) {
+            // 1. Row-level lock on payment record to prevent race conditions
+            const pRes = await client.query(
+              'SELECT * FROM pay_svc.payments WHERE razorpay_order_id = $1 FOR UPDATE',
+              [orderId]
+            );
+
+            if (pRes.rows.length === 0) {
+              await client.query('ROLLBACK');
+              return reply.status(404).send({ error: 'Payment order record not found' });
+            }
+
             const payRow = pRes.rows[0];
 
-            // Idempotency: If this payment was already captured, acknowledge immediately without duplicate processing
+            // 2. Amount verification: webhook amount must match expected order amount
+            if (typeof amountPaise === 'number' && payRow.amount_paise !== amountPaise) {
+              req.log.warn({ expected: payRow.amount_paise, received: amountPaise }, 'Payment webhook amount mismatch');
+              await client.query('ROLLBACK');
+              return reply.status(400).send({ error: `Payment amount mismatch: expected ${payRow.amount_paise}, received ${amountPaise}` });
+            }
+
+            // 3. Idempotency: If this payment was already captured, acknowledge immediately without duplicate processing
             if (payRow.status === 'captured') {
+              await client.query('COMMIT');
               return reply.send({ received: true, idempotent: true });
             }
 
             const bookingId = payRow.booking_id;
 
             // Update payment record to captured
-            await pgPool.query(
+            await client.query(
               `UPDATE pay_svc.payments 
                SET status = 'captured', razorpay_payment_id = $1, raw_payload = $2, updated_at = NOW()
                WHERE id = $3`,
               [paymentId || `pay_${Date.now()}`, event, payRow.id]
             );
 
-            // Fetch booking to calculate balance
-            const bRes = await pgPool.query(
-              'SELECT total_amount_paise FROM order_svc.bookings WHERE id = $1',
+            // Fetch booking with row lock
+            const bRes = await client.query(
+              'SELECT status, total_amount_paise FROM order_svc.bookings WHERE id = $1 FOR UPDATE',
               [bookingId]
             );
 
             if (bRes.rows.length > 0) {
-              const totalAmount = bRes.rows[0].total_amount_paise || 0;
-              const balanceDue = Math.max(0, totalAmount - amountPaise);
+              const booking = bRes.rows[0];
 
-              // Update booking to 'paid'
-              await pgPool.query(
-                `UPDATE order_svc.bookings 
-                 SET status = 'paid', 
-                     amount_paid_paise = $1, 
-                     balance_due_paise = $2, 
-                     updated_at = NOW()
-                 WHERE id = $3`,
-                [amountPaise, balanceDue, bookingId]
-              );
+              // CRITICAL: A replayed/duplicate webhook must NEVER move a completed or cancelled booking back to 'paid'
+              if (booking.status !== 'completed' && booking.status !== 'cancelled') {
+                const totalAmount = booking.total_amount_paise || 0;
+                const balanceDue = Math.max(0, totalAmount - (amountPaise || payRow.amount_paise));
 
-              // Record in booking audit history
-              await pgPool.query(
-                `INSERT INTO order_svc.booking_status_history (booking_id, from_status, to_status, note)
-                 VALUES ($1, 'accepted', 'paid', $2)`,
-                [bookingId, `Payment captured via Razorpay ID: ${paymentId}`]
-              );
+                // Update booking to 'paid'
+                await client.query(
+                  `UPDATE order_svc.bookings 
+                   SET status = 'paid', 
+                       amount_paid_paise = $1, 
+                       balance_due_paise = $2, 
+                       updated_at = NOW()
+                   WHERE id = $3`,
+                  [amountPaise || payRow.amount_paise, balanceDue, bookingId]
+                );
+
+                // Record in booking audit history
+                await client.query(
+                  `INSERT INTO order_svc.booking_status_history (booking_id, from_status, to_status, note)
+                   VALUES ($1, $2, 'paid', $3)`,
+                  [bookingId, booking.status, `Payment captured via Razorpay ID: ${paymentId}`]
+                );
+              }
             }
+
+            await client.query('COMMIT');
+            return reply.send({ received: true });
+          } catch (txErr) {
+            await client.query('ROLLBACK');
+            throw txErr;
+          } finally {
+            client.release();
           }
         }
       }
@@ -311,9 +354,13 @@ export function buildPaymentServer() {
         return reply.status(400).send({ error: 'bookingId is required' });
       }
 
-      // Query booking details
+      // Query booking details and caterer dynamic commission
       const bRes = await pgPool.query(
-        'SELECT id, caterer_id, status, total_amount_paise, commission_pct FROM order_svc.bookings WHERE id = $1',
+        `SELECT b.id, b.caterer_id, b.status, b.total_amount_paise, 
+                COALESCE(c.commission_pct, b.commission_pct, 15.00) as commission_pct
+         FROM order_svc.bookings b
+         LEFT JOIN caterer_svc.caterers c ON b.caterer_id = c.id
+         WHERE b.id = $1`,
         [bookingId]
       );
 
@@ -324,6 +371,7 @@ export function buildPaymentServer() {
       const booking = bRes.rows[0];
       const grossPaise = booking.total_amount_paise || 0;
       const commissionPct = parseFloat(booking.commission_pct || '15.00');
+      // Exact integer paise with round half up
       const commissionPaise = Math.round((grossPaise * commissionPct) / 100);
       const netPayoutPaise = grossPaise - commissionPaise;
 
@@ -333,6 +381,7 @@ export function buildPaymentServer() {
          VALUES ($1, $2, $3, $4, $5, $6, 'pending')
          ON CONFLICT (booking_id) DO UPDATE 
          SET gross_amount_paise = EXCLUDED.gross_amount_paise,
+             commission_pct = EXCLUDED.commission_pct,
              commission_amount_paise = EXCLUDED.commission_amount_paise,
              net_payout_paise = EXCLUDED.net_payout_paise,
              updated_at = NOW()

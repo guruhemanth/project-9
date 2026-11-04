@@ -88,10 +88,11 @@ export function buildGatewayServer() {
   });
 
   // Health & Readiness checks
-  server.get('/health', async () => ({
+  server.get('/health', async (req) => ({
     status: 'ok',
     gateway: 'caterconnect-api-gateway',
     timestamp: new Date().toISOString(),
+    hasSpoofedHeaders: Boolean(req.headers['x-user-id'] || req.headers['x-user-role'] || req.headers['x-internal-token']),
   }));
 
   server.get('/ready', async () => ({

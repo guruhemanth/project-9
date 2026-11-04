@@ -35,22 +35,17 @@ describe('Gateway Security Holes Verification (Test-First)', () => {
 
   it('strips client-supplied x-user-* headers to prevent identity spoofing', async () => {
     // F6 test: client sends spoofed x-user-id header
-    const customerToken = app.jwt.sign({
-      sub: 'c0000000-0000-0000-0000-000000000001',
-      role: 'customer',
-      email: 'customer@caterconnect.com',
-    });
-
     const res = await app.inject({
       method: 'GET',
-      url: '/api/caterers/cities',
+      url: '/health',
       headers: {
-        authorization: `Bearer ${customerToken}`,
         'x-user-id': 'spoofed-admin-id',
         'x-user-role': 'admin',
+        'x-internal-token': 'spoofed-internal-token',
       },
     });
 
     expect(res.statusCode).toBe(200);
+    expect(res.json().hasSpoofedHeaders).toBe(false);
   });
 });
