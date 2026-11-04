@@ -61,6 +61,7 @@ export interface DbEnv {
 
 export interface AuthEnv extends DbEnv {
   JWT_SECRET: string;
+  GOOGLE_CLIENT_ID?: string;
 }
 
 export interface PaymentEnv extends DbEnv {
@@ -173,6 +174,7 @@ export function createAuthEnvSchema(): z.ZodType<AuthEnv, z.ZodTypeDef, unknown>
     APP_DATABASE_URL: z.string().optional(),
     DATABASE_URL: z.string().optional(),
     JWT_SECRET: z.string().optional(),
+    GOOGLE_CLIENT_ID: z.string().optional(),
   }).transform((data): AuthEnv => {
     const isTesting = isTestEnv(data.NODE_ENV);
     const rawUrl = data.APP_DATABASE_URL || data.DATABASE_URL;
@@ -207,6 +209,7 @@ export function createAuthEnvSchema(): z.ZodType<AuthEnv, z.ZodTypeDef, unknown>
       ALLOWED_ORIGINS: data.ALLOWED_ORIGINS,
       DATABASE_URL: dbUrl,
       JWT_SECRET: secret,
+      GOOGLE_CLIENT_ID: data.GOOGLE_CLIENT_ID,
     };
   });
 }

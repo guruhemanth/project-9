@@ -19,3 +19,10 @@ export async function registerApi(data: {
     body: JSON.stringify(data),
   });
 }
+
+export async function googleAuthApi(idToken: string) {
+  return apiFetch<{ user: any; token: string; refreshToken?: string }>('/api/auth/google', {
+    method: 'POST',
+    body: JSON.stringify({ idToken }),
+  });
+}

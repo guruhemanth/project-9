@@ -13,7 +13,8 @@ import {
   loggerRedactionConfig,
 } from '@caterconnect/shared';
 import { pgPool } from './db';
-import { findUserByEmail, findUserById, createUser } from './users';
+import { findUserByEmail, findUserById, createUser, createGoogleUser, linkGoogleIdToUser } from './users';
+import { verifyGoogleIdToken } from './google';
 
 export function buildAuthServer() {
   const env = validateEnv(createAuthEnvSchema(), process.env);
@@ -95,7 +96,7 @@ export function buildAuthServer() {
         return reply.status(401).send({ error: 'Invalid email or password' });
       }
 
-      const validPassword = await bcrypt.compare(password, user.password_hash);
+      const validPassword = user.password_hash ? await bcrypt.compare(password, user.password_hash) : false;
       if (!validPassword) {
         return reply.status(401).send({ error: 'Invalid email or password' });
       }
@@ -119,6 +120,93 @@ export function buildAuthServer() {
     } catch (err: any) {
       console.error('LOGIN ERROR DETAILS:', err);
       return reply.status(500).send({ error: err.message || 'Internal Server Error' });
+    }
+  });
+
+  // Google OAuth Sign-in (Customers Only)
+  server.post('/api/auth/google', async (req, reply) => {
+    try {
+      const { idToken } = (req.body as any) || {};
+      if (!idToken || typeof idToken !== 'string') {
+        return reply.status(400).send({ error: 'idToken is required' });
+      }
+
+      const isTesting = env.NODE_ENV === 'test';
+      let googleUser;
+      try {
+        googleUser = await verifyGoogleIdToken(idToken, env.GOOGLE_CLIENT_ID, isTesting);
+      } catch (verifyErr: any) {
+        req.log.warn({ err: verifyErr.message }, 'Google ID token verification failed');
+        return reply.status(401).send({ error: 'Invalid Google authentication token' });
+      }
+
+      const existingUser = await findUserByEmail(googleUser.email);
+
+      if (existingUser) {
+        // Enforce: Customers only! Reject caterers and admins.
+        if (existingUser.role !== 'customer') {
+          return reply.status(403).send({
+            error: 'Google sign-in is restricted to customer accounts. Caterers and administrators must sign in with their registered email and password credentials.',
+          });
+        }
+
+        // Link google_id if not linked
+        await linkGoogleIdToUser(existingUser.id, googleUser.sub);
+
+        const token = server.jwt.sign(
+          { sub: existingUser.id, role: existingUser.role, email: existingUser.email },
+          { expiresIn: '7d' }
+        );
+        const refreshToken = server.jwt.sign(
+          { sub: existingUser.id, type: 'refresh' },
+          { expiresIn: '30d' }
+        );
+
+        return reply.send({
+          user: {
+            id: existingUser.id,
+            email: existingUser.email,
+            role: existingUser.role,
+            fullName: existingUser.full_name,
+            phone: existingUser.phone,
+            createdAt: existingUser.created_at,
+          },
+          token,
+          refreshToken,
+        });
+      }
+
+      // User does not exist -> provision new customer account
+      const newUser = await createGoogleUser({
+        email: googleUser.email,
+        fullName: googleUser.name || 'Google Customer',
+        googleId: googleUser.sub,
+      });
+
+      const token = server.jwt.sign(
+        { sub: newUser.id, role: newUser.role, email: googleUser.email },
+        { expiresIn: '7d' }
+      );
+      const refreshToken = server.jwt.sign(
+        { sub: newUser.id, type: 'refresh' },
+        { expiresIn: '30d' }
+      );
+
+      return reply.send({
+        user: {
+          id: newUser.id,
+          email: googleUser.email,
+          role: newUser.role,
+          fullName: newUser.fullName,
+          phone: newUser.phone,
+          createdAt: newUser.createdAt,
+        },
+        token,
+        refreshToken,
+      });
+    } catch (err: any) {
+      req.log.error(err);
+      return reply.status(500).send({ error: 'Failed to process Google authentication' });
     }
   });
 
