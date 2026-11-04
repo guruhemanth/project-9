@@ -11,6 +11,7 @@ import {
   buildCorsOptions,
   registerCentralizedErrorHandler,
   loggerRedactionConfig,
+  getAuthenticatedUser,
 } from '@caterconnect/shared';
 
 export function buildChatServer() {
@@ -36,13 +37,47 @@ export function buildChatServer() {
   server.register(fastifyCors, buildCorsOptions(env.ALLOWED_ORIGINS, env.NODE_ENV));
   server.register(fastifyWebsocket);
 
+  // Helper to assert caller is a participant in the chat thread or admin
+  async function assertThreadParticipant(
+    threadId: string,
+    actorId: string,
+    actorRole: string
+  ): Promise<{ authorized: boolean; thread?: any; statusCode?: number; error?: string }> {
+    const tRes = await pgPool.query(
+      `SELECT t.id, t.customer_id, t.caterer_id, c.owner_id as caterer_owner_id
+       FROM chat_svc.chat_threads t
+       JOIN caterer_svc.caterers c ON t.caterer_id = c.id
+       WHERE t.id = $1 LIMIT 1`,
+      [threadId]
+    );
+
+    if (tRes.rows.length === 0) {
+      return { authorized: false, statusCode: 404, error: 'Chat thread not found' };
+    }
+
+    const thread = tRes.rows[0];
+    if (
+      actorRole !== 'admin' &&
+      actorId !== thread.customer_id &&
+      actorId !== thread.caterer_owner_id
+    ) {
+      return {
+        authorized: false,
+        statusCode: 403,
+        error: 'Forbidden: You are not an authorized participant in this chat thread',
+      };
+    }
+
+    return { authorized: true, thread };
+  }
+
   // Health & Readiness checks
   server.get('/health', async () => ({ status: 'ok', service: 'chat-service' }));
   server.get('/ready', async (_req, reply) => {
     try {
       await pgPool.query('SELECT 1');
       return { status: 'ready', database: 'connected', service: 'chat-service' };
-    } catch (err: any) {
+    } catch {
       return reply.status(503).send({ status: 'not_ready', database: 'disconnected', service: 'chat-service' });
     }
   });
@@ -51,8 +86,10 @@ export function buildChatServer() {
   server.get('/api/chat/threads/booking/:bookingId', async (req, reply) => {
     try {
       const { bookingId } = req.params as { bookingId: string };
-      const userId = req.headers['x-user-id'] as string;
-      const userRole = (req.headers['x-user-role'] as string) || 'customer';
+      const user = getAuthenticatedUser(req);
+      if (!user) {
+        return reply.status(401).send({ error: 'Unauthorized: Authentication required' });
+      }
 
       // 1. Fetch booking participants
       const bRes = await pgPool.query(
@@ -71,9 +108,9 @@ export function buildChatServer() {
 
       // 2. Authorization check: user must be customer, caterer owner, or admin
       if (
-        userRole !== 'admin' &&
-        userId !== booking.customer_id &&
-        userId !== booking.caterer_owner_id
+        user.role !== 'admin' &&
+        user.userId !== booking.customer_id &&
+        user.userId !== booking.caterer_owner_id
       ) {
         return reply.status(403).send({ error: 'Forbidden: You are not a participant in this booking' });
       }
@@ -107,7 +144,7 @@ export function buildChatServer() {
       });
     } catch (err: any) {
       console.error('GET /threads/booking error:', err);
-      return reply.status(500).send({ error: err.message });
+      return reply.status(500).send({ error: 'Internal server error' });
     }
   });
 
@@ -115,6 +152,15 @@ export function buildChatServer() {
   server.get('/api/chat/threads/:threadId/messages', async (req, reply) => {
     try {
       const { threadId } = req.params as { threadId: string };
+      const user = getAuthenticatedUser(req);
+      if (!user) {
+        return reply.status(401).send({ error: 'Unauthorized: Authentication required' });
+      }
+
+      const check = await assertThreadParticipant(threadId, user.userId, user.role);
+      if (!check.authorized) {
+        return reply.status(check.statusCode || 403).send({ error: check.error });
+      }
 
       const mRes = await pgPool.query(
         `SELECT m.id, m.thread_id, m.sender_id, m.sender_role, m.message, m.is_read, m.created_at, u.full_name as sender_name
@@ -139,7 +185,7 @@ export function buildChatServer() {
       });
     } catch (err: any) {
       console.error('GET /messages error:', err);
-      return reply.status(500).send({ error: err.message });
+      return reply.status(500).send({ error: 'Internal server error' });
     }
   });
 
@@ -147,11 +193,14 @@ export function buildChatServer() {
   server.post('/api/chat/threads/:threadId/messages', async (req, reply) => {
     try {
       const { threadId } = req.params as { threadId: string };
-      const senderId = (req.headers['x-user-id'] as string) || (req.body as any).senderId;
-      const senderRole = ((req.headers['x-user-role'] as string) || (req.body as any).senderRole || 'customer') as UserRole;
+      const user = getAuthenticatedUser(req);
+      if (!user) {
+        return reply.status(401).send({ error: 'Unauthorized: Authentication required' });
+      }
 
-      if (!senderId) {
-        return reply.status(401).send({ error: 'Missing sender identification' });
+      const check = await assertThreadParticipant(threadId, user.userId, user.role);
+      if (!check.authorized) {
+        return reply.status(check.statusCode || 403).send({ error: check.error });
       }
 
       const parseResult = sendMessageSchema.safeParse(req.body);
@@ -168,7 +217,7 @@ export function buildChatServer() {
         `INSERT INTO chat_svc.chat_messages (thread_id, sender_id, sender_role, message)
          VALUES ($1, $2, $3, $4)
          RETURNING *`,
-        [threadId, senderId, senderRole, message]
+        [threadId, user.userId, user.role, message]
       );
 
       // Update thread timestamp
@@ -191,13 +240,28 @@ export function buildChatServer() {
       });
     } catch (err: any) {
       console.error('POST /messages error:', err);
-      return reply.status(500).send({ error: err.message });
+      return reply.status(500).send({ error: 'Internal server error' });
     }
   });
 
   // WebSocket connection for real-time live messaging
   server.register(async function (fastify) {
-    fastify.get('/api/chat/ws/:threadId', { websocket: true }, (socket, req) => {
+    fastify.get('/api/chat/ws/:threadId', { websocket: true }, async (socket, req) => {
+      const user = getAuthenticatedUser(req);
+      if (!user) {
+        socket.send(JSON.stringify({ event: 'error', message: 'Unauthorized: Authentication required' }));
+        socket.close(1008, 'Unauthorized');
+        return;
+      }
+
+      const { threadId } = req.params as { threadId: string };
+      const check = await assertThreadParticipant(threadId, user.userId, user.role);
+      if (!check.authorized) {
+        socket.send(JSON.stringify({ event: 'error', message: check.error || 'Forbidden: Access denied' }));
+        socket.close(1008, 'Forbidden');
+        return;
+      }
+
       socket.on('message', async (data) => {
         try {
           const parsed = JSON.parse(data.toString());

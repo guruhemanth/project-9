@@ -10,7 +10,40 @@ import {
   buildCorsOptions,
   registerCentralizedErrorHandler,
   loggerRedactionConfig,
+  signInternalToken,
 } from '@caterconnect/shared';
+
+// Public endpoints that do NOT require a JWT token (exact path / pattern match)
+const PUBLIC_EXACT_ROUTES = new Set([
+  '/health',
+  '/ready',
+  '/api/auth/register',
+  '/api/auth/login',
+  '/api/auth/google',
+  '/api/payments/webhook',
+  '/api/caterers',
+  '/api/caterers/cities',
+]);
+
+function isPublicRoute(method: string, url: string): boolean {
+  const path = url.split('?')[0];
+
+  // Exactly matches one of the public endpoints
+  if (PUBLIC_EXACT_ROUTES.has(path)) {
+    // If it's a caterer search/listing, only GET is public
+    if (path === '/api/caterers' || path === '/api/caterers/cities') {
+      return method === 'GET';
+    }
+    return true;
+  }
+
+  // Public caterer detail view: GET /api/caterers/:id
+  if (method === 'GET' && /^\/api\/caterers\/[0-9a-fA-F-]+$/.test(path)) {
+    return true;
+  }
+
+  return false;
+}
 
 export function buildGatewayServer() {
   const env = validateEnv(createGatewayEnvSchema(), process.env);
@@ -47,6 +80,13 @@ export function buildGatewayServer() {
     secret: env.JWT_SECRET,
   });
 
+  // Strip client-sent x-user-* and internal security headers on EVERY incoming request
+  server.addHook('onRequest', async (req) => {
+    delete req.headers['x-user-id'];
+    delete req.headers['x-user-role'];
+    delete req.headers['x-internal-token'];
+  });
+
   // Health & Readiness checks
   server.get('/health', async () => ({
     status: 'ok',
@@ -59,6 +99,45 @@ export function buildGatewayServer() {
     gateway: 'caterconnect-api-gateway',
     timestamp: new Date().toISOString(),
   }));
+
+  // Generic JWT authentication hook that signs internal token for downstream services
+  const requireAuth = async (req: any, reply: any) => {
+    if (isPublicRoute(req.method, req.url)) {
+      return;
+    }
+
+    try {
+      await req.jwtVerify();
+      const user = req.user as { sub: string; role: any; email?: string };
+      req.headers['x-user-id'] = user.sub;
+      req.headers['x-user-role'] = user.role;
+      req.headers['x-internal-token'] = signInternalToken(
+        { userId: user.sub, role: user.role, email: user.email },
+        env.JWT_SECRET
+      );
+    } catch {
+      return reply.status(401).send({ error: 'Unauthorized: Authentication required' });
+    }
+  };
+
+  // Admin Verification Guard
+  const adminAuthPreHandler = async (req: any, reply: any) => {
+    try {
+      await req.jwtVerify();
+      const user = req.user as { sub: string; role: string; email?: string };
+      if (user.role !== 'admin') {
+        return reply.status(403).send({ error: 'Forbidden: Admin access required' });
+      }
+      req.headers['x-user-id'] = user.sub;
+      req.headers['x-user-role'] = user.role;
+      req.headers['x-internal-token'] = signInternalToken(
+        { userId: user.sub, role: 'admin', email: user.email },
+        env.JWT_SECRET
+      );
+    } catch {
+      return reply.status(401).send({ error: 'Unauthorized: Authentication required' });
+    }
+  };
 
   // Service URLs
   const AUTH_URL = env.AUTH_SERVICE_URL;
@@ -81,17 +160,11 @@ export function buildGatewayServer() {
     prefix: '/api/caterers',
     rewritePrefix: '/api/caterers',
     preHandler: async (req, reply) => {
-      // If mutation (onboarding / status update / adding package), verify JWT
-      if (req.method === 'POST' || req.method === 'PATCH' || req.method === 'PUT') {
-        try {
-          await req.jwtVerify();
-          const user = req.user as { sub: string; role: string; email: string };
-          req.headers['x-user-id'] = user.sub;
-          req.headers['x-user-role'] = user.role;
-        } catch {
-          return reply.status(401).send({ error: 'Unauthorized: Authentication required' });
-        }
+      // Allow GET public routes; require authentication for mutations and protected reads
+      if (isPublicRoute(req.method, req.url)) {
+        return;
       }
+      return requireAuth(req, reply);
     },
   });
 
@@ -100,16 +173,7 @@ export function buildGatewayServer() {
     upstream: BOOKING_URL,
     prefix: '/api/bookings',
     rewritePrefix: '/api/bookings',
-    preHandler: async (req, reply) => {
-      try {
-        await req.jwtVerify();
-        const user = req.user as { sub: string; role: string; email: string };
-        req.headers['x-user-id'] = user.sub;
-        req.headers['x-user-role'] = user.role;
-      } catch {
-        return reply.status(401).send({ error: 'Unauthorized: Authentication required' });
-      }
-    },
+    preHandler: requireAuth,
   });
 
   // 4. Payment Service Routes
@@ -118,26 +182,21 @@ export function buildGatewayServer() {
     prefix: '/api/payments',
     rewritePrefix: '/api/payments',
     preHandler: async (req, reply) => {
-      // Webhooks are signed by Razorpay HMAC, don't require user JWT
-      if (req.url.includes('/webhook')) {
+      const path = req.url.split('?')[0];
+      // Only the EXACT webhook path is public
+      if (path === '/api/payments/webhook' && req.method === 'POST') {
         return;
       }
-      try {
-        await req.jwtVerify();
-        const user = req.user as { sub: string; role: string; email: string };
-        req.headers['x-user-id'] = user.sub;
-        req.headers['x-user-role'] = user.role;
-      } catch {
-        return reply.status(401).send({ error: 'Unauthorized: Authentication required' });
-      }
+      return requireAuth(req, reply);
     },
   });
 
-  // 5. Notification Service Routes
+  // 5. Notification Service Routes (Protected)
   server.register(fastifyHttpProxy, {
     upstream: NOTIFY_URL,
     prefix: '/api/notify',
     rewritePrefix: '/api/notify',
+    preHandler: requireAuth,
   });
 
   // 6. Chat & Messaging Routes
@@ -145,32 +204,8 @@ export function buildGatewayServer() {
     upstream: CHAT_URL,
     prefix: '/api/chat',
     rewritePrefix: '/api/chat',
-    preHandler: async (req, reply) => {
-      try {
-        await req.jwtVerify();
-        const user = req.user as { sub: string; role: string; email: string };
-        req.headers['x-user-id'] = user.sub;
-        req.headers['x-user-role'] = user.role;
-      } catch {
-        return reply.status(401).send({ error: 'Unauthorized: Authentication required for chat' });
-      }
-    },
+    preHandler: requireAuth,
   });
-
-  // Admin Verification Guard
-  const adminAuthPreHandler = async (req: any, reply: any) => {
-    try {
-      await req.jwtVerify();
-      const user = req.user as { sub: string; role: string; email: string };
-      if (user.role !== 'admin') {
-        return reply.status(403).send({ error: 'Forbidden: Admin access required' });
-      }
-      req.headers['x-user-id'] = user.sub;
-      req.headers['x-user-role'] = user.role;
-    } catch {
-      return reply.status(401).send({ error: 'Unauthorized: Authentication required' });
-    }
-  };
 
   // 7. Admin Service Routes
   server.register(fastifyHttpProxy, {

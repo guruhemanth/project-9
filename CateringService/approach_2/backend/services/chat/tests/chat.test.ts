@@ -96,6 +96,10 @@ describe('Chat Service Integration', () => {
     const historyRes = await app.inject({
       method: 'GET',
       url: `/api/chat/threads/${createdThreadId}/messages`,
+      headers: {
+        'x-user-id': 'c0000000-0000-0000-0000-000000000001',
+        'x-user-role': 'customer',
+      },
     });
 
     expect(historyRes.statusCode).toBe(200);

@@ -77,11 +77,16 @@ describe('Caterer & Menu Service Integration', () => {
   it('allows caterer to declare a blackout date and query availability', async () => {
     const catererId = 'd0000000-0000-0000-0000-000000000001';
     const blackoutDate = '2026-12-31';
+    const catererHeaders = {
+      'x-user-id': 'c0000000-0000-0000-0000-000000000002',
+      'x-user-role': 'caterer',
+    };
 
     // 1. Add blackout date
     const postRes = await app.inject({
       method: 'POST',
       url: `/api/caterers/${catererId}/blackout-dates`,
+      headers: catererHeaders,
       payload: {
         date: blackoutDate,
         reason: 'New Year Eve Private Event',
@@ -103,16 +108,23 @@ describe('Caterer & Menu Service Integration', () => {
     const delRes = await app.inject({
       method: 'DELETE',
       url: `/api/caterers/${catererId}/blackout-dates/${blackoutDate}`,
+      headers: catererHeaders,
     });
     expect(delRes.statusCode).toBe(200);
     expect(delRes.json().success).toBe(true);
   });
 
   it('allows admin to list all caterers and update caterer status', async () => {
+    const adminHeaders = {
+      'x-user-id': 'c0000000-0000-0000-0000-000000000003',
+      'x-user-role': 'admin',
+    };
+
     // 1. List all caterers
     const listRes = await app.inject({
       method: 'GET',
       url: '/api/admin/caterers',
+      headers: adminHeaders,
     });
     expect(listRes.statusCode).toBe(200);
     const caterers = listRes.json().caterers;
@@ -123,6 +135,7 @@ describe('Caterer & Menu Service Integration', () => {
     const failRes = await app.inject({
       method: 'PATCH',
       url: `/api/admin/caterers/${caterers[0].id}/status`,
+      headers: adminHeaders,
       payload: { status: 'rejected' },
     });
     expect(failRes.statusCode).toBe(400);
@@ -131,6 +144,7 @@ describe('Caterer & Menu Service Integration', () => {
     const patchRes = await app.inject({
       method: 'PATCH',
       url: `/api/admin/caterers/${caterers[0].id}/status`,
+      headers: adminHeaders,
       payload: { status: 'approved' },
     });
     expect(patchRes.statusCode).toBe(200);

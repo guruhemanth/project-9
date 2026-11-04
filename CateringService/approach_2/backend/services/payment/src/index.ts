@@ -13,6 +13,7 @@ import {
   buildCorsOptions,
   registerCentralizedErrorHandler,
   loggerRedactionConfig,
+  getAuthenticatedUser,
 } from '@caterconnect/shared';
 
 export function buildPaymentServer() {
@@ -62,9 +63,14 @@ export function buildPaymentServer() {
     }
   });
 
-  // Create Razorpay Order with Dual Options: Option 1 (100% Full) or Option 2 (25% Advance)
+  // Create Razorpay Order - OWNERSHIP GUARD (Must be the booking customer)
   server.post('/api/payments/create-order', async (req, reply) => {
     try {
+      const authUser = getAuthenticatedUser(req);
+      if (!authUser) {
+        return reply.status(401).send({ error: 'Unauthorized: Authentication required' });
+      }
+
       const parseResult = createOrderSchema.safeParse(req.body);
       if (!parseResult.success) {
         return reply.status(400).send({
@@ -75,9 +81,9 @@ export function buildPaymentServer() {
 
       const { bookingId, paymentOption, advancePct } = parseResult.data;
 
-      // Query booking details
+      // Query booking details and ownership
       const bRes = await pgPool.query(
-        'SELECT id, status, total_amount_paise FROM order_svc.bookings WHERE id = $1',
+        'SELECT id, customer_id, status, total_amount_paise FROM order_svc.bookings WHERE id = $1',
         [bookingId]
       );
 
@@ -86,6 +92,12 @@ export function buildPaymentServer() {
       }
 
       const booking = bRes.rows[0];
+
+      // Ensure caller is the customer who placed this booking
+      if (authUser.role !== 'admin' && booking.customer_id !== authUser.userId) {
+        return reply.status(403).send({ error: 'Forbidden: You do not own this booking' });
+      }
+
       if (booking.status !== 'accepted') {
         return reply.status(400).send({
           error: `Cannot initiate payment for booking in '${booking.status}' status. Must be 'accepted'.`,
@@ -185,8 +197,8 @@ export function buildPaymentServer() {
         payment: payRes.rows[0],
       });
     } catch (err: any) {
-      console.error('POST /create-order error:', err);
-      return reply.status(500).send({ error: err.message });
+      req.log.error(err);
+      return reply.status(500).send({ error: 'Failed to initiate payment order' });
     }
   });
 
@@ -281,14 +293,19 @@ export function buildPaymentServer() {
 
       return reply.send({ received: true });
     } catch (err: any) {
-      console.error('Webhook error:', err);
-      return reply.status(500).send({ error: err.message });
+      req.log.error(err);
+      return reply.status(500).send({ error: 'Failed to process payment webhook' });
     }
   });
 
-  // Generate settlement ledger entry for a completed booking
+  // Generate settlement ledger entry for a completed booking - ADMIN GUARD
   server.post('/api/payments/settlements/generate', async (req, reply) => {
     try {
+      const authUser = getAuthenticatedUser(req);
+      if (!authUser || authUser.role !== 'admin') {
+        return reply.status(403).send({ error: 'Forbidden: Admin access required' });
+      }
+
       const { bookingId } = (req.body as any) || {};
       if (!bookingId) {
         return reply.status(400).send({ error: 'bookingId is required' });
@@ -325,15 +342,27 @@ export function buildPaymentServer() {
 
       return reply.status(201).send({ settlement: sRes.rows[0] });
     } catch (err: any) {
-      console.error('POST /settlements/generate error:', err);
-      return reply.status(500).send({ error: err.message });
+      req.log.error(err);
+      return reply.status(500).send({ error: 'Failed to generate settlement' });
     }
   });
 
-  // Get caterer's financial settlement ledger & totals
+  // Get caterer's financial settlement ledger & totals - CATERER OWNER OR ADMIN GUARD
   server.get('/api/payments/settlements/caterer/:catererId', async (req, reply) => {
     try {
+      const authUser = getAuthenticatedUser(req);
+      if (!authUser) {
+        return reply.status(401).send({ error: 'Unauthorized: Authentication required' });
+      }
+
       const { catererId } = req.params as { catererId: string };
+
+      if (authUser.role !== 'admin') {
+        const cRes = await pgPool.query('SELECT owner_id FROM caterer_svc.caterers WHERE id = $1', [catererId]);
+        if (cRes.rows.length === 0 || cRes.rows[0].owner_id !== authUser.userId) {
+          return reply.status(403).send({ error: 'Forbidden: You do not own this caterer ledger' });
+        }
+      }
 
       const settlementsRes = await pgPool.query(
         `SELECT s.*, b.event_date
@@ -389,14 +418,19 @@ export function buildPaymentServer() {
         settlements,
       });
     } catch (err: any) {
-      console.error('GET /settlements/caterer error:', err);
-      return reply.status(500).send({ error: err.message });
+      req.log.error(err);
+      return reply.status(500).send({ error: 'Failed to retrieve settlements' });
     }
   });
 
-  // Admin marks settlement as disbursed with bank UTR reference
+  // Admin marks settlement as disbursed with bank UTR reference - ADMIN GUARD
   server.post('/api/payments/settlements/:id/disburse', async (req, reply) => {
     try {
+      const authUser = getAuthenticatedUser(req);
+      if (!authUser || authUser.role !== 'admin') {
+        return reply.status(403).send({ error: 'Forbidden: Admin access required' });
+      }
+
       const { id } = req.params as { id: string };
       const parseResult = disburseSettlementSchema.safeParse(req.body);
       if (!parseResult.success) {
@@ -421,14 +455,19 @@ export function buildPaymentServer() {
 
       return reply.send({ settlement: updateRes.rows[0] });
     } catch (err: any) {
-      console.error('POST /settlements/:id/disburse error:', err);
-      return reply.status(500).send({ error: err.message });
+      req.log.error(err);
+      return reply.status(500).send({ error: 'Failed to disburse settlement' });
     }
   });
 
-  // Admin: List all caterer settlements across the platform
+  // Admin: List all caterer settlements across the platform - ADMIN GUARD
   server.get('/api/admin/settlements', async (req, reply) => {
     try {
+      const authUser = getAuthenticatedUser(req);
+      if (!authUser || authUser.role !== 'admin') {
+        return reply.status(403).send({ error: 'Forbidden: Admin access required' });
+      }
+
       const { status } = req.query as { status?: string };
       let sql = `
         SELECT 
@@ -469,14 +508,19 @@ export function buildPaymentServer() {
 
       return reply.send({ settlements });
     } catch (err: any) {
-      console.error('GET /api/admin/settlements error:', err);
-      return reply.status(500).send({ error: err.message });
+      req.log.error(err);
+      return reply.status(500).send({ error: 'Failed to list admin settlements' });
     }
   });
 
-  // Admin: Platform financial & booking analytics
-  server.get('/api/admin/analytics', async (_req, reply) => {
+  // Admin: Platform financial & booking analytics - ADMIN GUARD
+  server.get('/api/admin/analytics', async (req, reply) => {
     try {
+      const authUser = getAuthenticatedUser(req);
+      if (!authUser || authUser.role !== 'admin') {
+        return reply.status(403).send({ error: 'Forbidden: Admin access required' });
+      }
+
       // 1. Booking & GMV metrics
       const bookingAggRes = await pgPool.query(`
         SELECT 
@@ -525,14 +569,19 @@ export function buildPaymentServer() {
         },
       });
     } catch (err: any) {
-      console.error('GET /api/admin/analytics error:', err);
-      return reply.status(500).send({ error: err.message });
+      req.log.error(err);
+      return reply.status(500).send({ error: 'Failed to retrieve admin analytics' });
     }
   });
 
-  // Admin alias for settlement disbursement
+  // Admin alias for settlement disbursement - ADMIN GUARD
   server.post('/api/admin/settlements/:id/disburse', async (req, reply) => {
     try {
+      const authUser = getAuthenticatedUser(req);
+      if (!authUser || authUser.role !== 'admin') {
+        return reply.status(403).send({ error: 'Forbidden: Admin access required' });
+      }
+
       const { id } = req.params as { id: string };
       const parseResult = disburseSettlementSchema.safeParse(req.body);
       if (!parseResult.success) {
@@ -557,8 +606,8 @@ export function buildPaymentServer() {
 
       return reply.send({ success: true, settlement: updateRes.rows[0] });
     } catch (err: any) {
-      console.error('POST /api/admin/settlements/:id/disburse error:', err);
-      return reply.status(500).send({ error: err.message });
+      req.log.error(err);
+      return reply.status(500).send({ error: 'Failed to disburse settlement' });
     }
   });
 

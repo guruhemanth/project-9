@@ -9,6 +9,7 @@ import {
   buildCorsOptions,
   registerCentralizedErrorHandler,
   loggerRedactionConfig,
+  getAuthenticatedUser,
 } from '@caterconnect/shared';
 
 function renderMessage(template: string, params: Record<string, any>): string {
@@ -54,7 +55,7 @@ export function buildNotificationServer() {
     try {
       await pgPool.query('SELECT 1');
       return { status: 'ready', database: 'connected', service: 'notification-service' };
-    } catch (err: any) {
+    } catch {
       return reply.status(503).send({ status: 'not_ready', database: 'disconnected', service: 'notification-service' });
     }
   });
@@ -102,7 +103,7 @@ export function buildNotificationServer() {
       });
     } catch (err: any) {
       console.error('POST /notify/dispatch error:', err);
-      return reply.status(500).send({ error: err.message });
+      return reply.status(500).send({ error: 'Internal server error' });
     }
   });
 
@@ -110,6 +111,29 @@ export function buildNotificationServer() {
   server.get('/api/notify/logs/:bookingId', async (req, reply) => {
     try {
       const { bookingId } = req.params as { bookingId: string };
+      const user = getAuthenticatedUser(req);
+      if (!user) {
+        return reply.status(401).send({ error: 'Unauthorized: Authentication required' });
+      }
+
+      // Check access: must be booking customer, caterer owner, or admin
+      if (user.role !== 'admin') {
+        const bRes = await pgPool.query(
+          `SELECT b.id, b.customer_id, c.owner_id as caterer_owner_id
+           FROM order_svc.bookings b
+           JOIN caterer_svc.caterers c ON b.caterer_id = c.id
+           WHERE b.id = $1 LIMIT 1`,
+          [bookingId]
+        );
+        if (bRes.rows.length === 0) {
+          return reply.status(404).send({ error: 'Booking not found' });
+        }
+        const booking = bRes.rows[0];
+        if (user.userId !== booking.customer_id && user.userId !== booking.caterer_owner_id) {
+          return reply.status(403).send({ error: 'Forbidden: Access denied to notification logs' });
+        }
+      }
+
       const res = await pgPool.query(
         'SELECT * FROM notify_svc.notification_logs WHERE booking_id = $1 ORDER BY created_at DESC',
         [bookingId]
@@ -117,7 +141,7 @@ export function buildNotificationServer() {
       return reply.send({ logs: res.rows });
     } catch (err: any) {
       console.error('GET /notify/logs error:', err);
-      return reply.status(500).send({ error: err.message });
+      return reply.status(500).send({ error: 'Internal server error' });
     }
   });
 

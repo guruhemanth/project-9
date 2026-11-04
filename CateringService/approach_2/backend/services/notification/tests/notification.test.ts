@@ -73,6 +73,10 @@ describe('Notification Service Integration (WhatsApp & SMS)', () => {
     const logsRes = await app.inject({
       method: 'GET',
       url: `/api/notify/logs/${testBookingId}`,
+      headers: {
+        'x-user-id': 'admin-uuid-001',
+        'x-user-role': 'admin',
+      },
     });
     expect(logsRes.statusCode).toBe(200);
     expect(logsRes.json().logs.length).toBeGreaterThanOrEqual(1);
