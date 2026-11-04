@@ -1,0 +1,159 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: caterconnect-postgres
+    restart: always
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgrespassword
+      POSTGRES_DB: caterconnect
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./database/01_init_schemas.sql:/docker-entrypoint-initdb.d/01_init_schemas.sql
+      - ./database/02_seed_data.sql:/docker-entrypoint-initdb.d/02_seed_data.sql
+      - ./database/03_availability_schema.sql:/docker-entrypoint-initdb.d/03_availability_schema.sql
+      - ./database/04_settlement_schema.sql:/docker-entrypoint-initdb.d/04_settlement_schema.sql
+      - ./database/05_notification_schema.sql:/docker-entrypoint-initdb.d/05_notification_schema.sql
+      - ./database/06_chat_schema.sql:/docker-entrypoint-initdb.d/06_chat_schema.sql
+
+  auth-service:
+    build:
+      context: .
+      dockerfile: backend/services/auth/Dockerfile
+    container_name: caterconnect-auth-service
+    restart: always
+    environment:
+      PORT: 4001
+      APP_DATABASE_URL: postgresql://postgres:postgrespassword@postgres:5432/caterconnect
+      JWT_SECRET: super-secret-jwt-token-with-at-least-32-characters-long
+    ports:
+      - "4001:4001"
+    depends_on:
+      - postgres
+
+  caterer-menu-service:
+    build:
+      context: .
+      dockerfile: backend/services/caterer-menu/Dockerfile
+    container_name: caterconnect-caterer-menu-service
+    restart: always
+    environment:
+      PORT: 4002
+      APP_DATABASE_URL: postgresql://postgres:postgrespassword@postgres:5432/caterconnect
+    ports:
+      - "4002:4002"
+    depends_on:
+      - postgres
+
+  booking-order-service:
+    build:
+      context: .
+      dockerfile: backend/services/booking-order/Dockerfile
+    container_name: caterconnect-booking-order-service
+    restart: always
+    environment:
+      PORT: 4003
+      APP_DATABASE_URL: postgresql://postgres:postgrespassword@postgres:5432/caterconnect
+    ports:
+      - "4003:4003"
+    depends_on:
+      - postgres
+
+  payment-service:
+    build:
+      context: .
+      dockerfile: backend/services/payment/Dockerfile
+    container_name: caterconnect-payment-service
+    restart: always
+    environment:
+      PORT: 4004
+      APP_DATABASE_URL: postgresql://postgres:postgrespassword@postgres:5432/caterconnect
+      RAZORPAY_KEY_ID: rzp_test_placeholder_key
+      RAZORPAY_KEY_SECRET: rzp_test_placeholder_secret
+      RAZORPAY_WEBHOOK_SECRET: caterconnect_test_webhook_secret_key
+    ports:
+      - "4004:4004"
+    depends_on:
+      - postgres
+
+  notification-service:
+    build:
+      context: .
+      dockerfile: backend/services/notification/Dockerfile
+    container_name: caterconnect-notification-service
+    restart: always
+    environment:
+      PORT: 4005
+      APP_DATABASE_URL: postgresql://postgres:postgrespassword@postgres:5432/caterconnect
+    ports:
+      - "4005:4005"
+    depends_on:
+      - postgres
+
+  chat-service:
+    build:
+      context: .
+      dockerfile: backend/services/chat/Dockerfile
+    container_name: caterconnect-chat-service
+    restart: always
+    environment:
+      PORT: 4006
+      APP_DATABASE_URL: postgresql://postgres:postgrespassword@postgres:5432/caterconnect
+    ports:
+      - "4006:4006"
+    depends_on:
+      - postgres
+
+  api-gateway:
+    build:
+      context: .
+      dockerfile: backend/gateway/Dockerfile
+    container_name: caterconnect-api-gateway
+    restart: always
+    environment:
+      PORT: 8080
+      JWT_SECRET: super-secret-jwt-token-with-at-least-32-characters-long
+      AUTH_SERVICE_URL: http://auth-service:4001
+      CATERER_SERVICE_URL: http://caterer-menu-service:4002
+      BOOKING_SERVICE_URL: http://booking-order-service:4003
+      PAYMENT_SERVICE_URL: http://payment-service:4004
+      NOTIFICATION_SERVICE_URL: http://notification-service:4005
+      CHAT_SERVICE_URL: http://chat-service:4006
+    ports:
+      - "8080:8080"
+    depends_on:
+      - auth-service
+      - caterer-menu-service
+      - booking-order-service
+      - payment-service
+      - notification-service
+      - chat-service
+
+  customer-app:
+    build:
+      context: .
+      dockerfile: frontend/customer/Dockerfile
+    container_name: caterconnect-customer-app
+    restart: always
+    ports:
+      - "3000:80"
+    depends_on:
+      - api-gateway
+
+  partner-app:
+    build:
+      context: .
+      dockerfile: frontend/partner/Dockerfile
+    container_name: caterconnect-partner-app
+    restart: always
+    ports:
+      - "3001:80"
+    depends_on:
+      - api-gateway
+
+volumes:
+  pgdata:

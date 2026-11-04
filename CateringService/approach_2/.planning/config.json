@@ -1,0 +1,9 @@
+{
+  "mode": "microservices",
+  "backend_framework": "fastify",
+  "language": "typescript",
+  "database": "postgresql",
+  "package_manager": "pnpm",
+  "architecture": "modular_microservices",
+  "target_path": "/home/guru/projects/project-9/CateringService/approach_2"
+}

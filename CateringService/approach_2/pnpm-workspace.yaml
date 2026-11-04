@@ -1,0 +1,8 @@
+packages:
+  - 'shared'
+  - 'frontend/customer'
+  - 'frontend/partner'
+  - 'backend/gateway'
+  - 'backend/services/*'
+allowBuilds:
+  esbuild: true
