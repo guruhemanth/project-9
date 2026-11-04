@@ -20,15 +20,27 @@ describe('Caterer & Menu Service Integration', () => {
     expect(res.json()).toEqual({ status: 'ok', service: 'caterer-menu-service' });
   });
 
-  it('lists approved caterers in Tirupati', async () => {
-    const res = await app.inject({ method: 'GET', url: '/api/caterers' });
-    expect(res.statusCode).toBe(200);
-    const body = res.json();
-    expect(body.caterers).toBeDefined();
-    expect(Array.isArray(body.caterers)).toBe(true);
-    expect(body.caterers.length).toBeGreaterThanOrEqual(1);
-    expect(body.caterers[0].status).toBe('approved');
-    expect(body.caterers[0].city).toBe('Tirupati');
+  it('lists approved caterers with city and regional location filtering', async () => {
+    // 1. All India query
+    const resAll = await app.inject({ method: 'GET', url: '/api/caterers' });
+    expect(resAll.statusCode).toBe(200);
+    const bodyAll = resAll.json();
+    expect(bodyAll.caterers).toBeDefined();
+    expect(bodyAll.caterers.length).toBeGreaterThanOrEqual(1);
+
+    // 2. Tirupati filter
+    const resTirupati = await app.inject({ method: 'GET', url: '/api/caterers?city=Tirupati' });
+    expect(resTirupati.statusCode).toBe(200);
+    const bodyTirupati = resTirupati.json();
+    expect(bodyTirupati.caterers.length).toBeGreaterThanOrEqual(1);
+    expect(bodyTirupati.caterers.every((c: any) => c.city === 'Tirupati')).toBe(true);
+
+    // 3. Active cities list
+    const resCities = await app.inject({ method: 'GET', url: '/api/caterers/cities' });
+    expect(resCities.statusCode).toBe(200);
+    const bodyCities = resCities.json();
+    expect(Array.isArray(bodyCities.cities)).toBe(true);
+    expect(bodyCities.cities.some((c: any) => c.city === 'Tirupati')).toBe(true);
   });
 
   it('retrieves detailed caterer profile with packages and items', async () => {

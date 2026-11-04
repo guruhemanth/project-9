@@ -31,18 +31,24 @@ export declare const loginSchema: z.ZodObject<{
 export declare const catererOnboardingSchema: z.ZodObject<{
     businessName: z.ZodString;
     description: z.ZodOptional<z.ZodString>;
+    state: z.ZodDefault<z.ZodString>;
     city: z.ZodDefault<z.ZodString>;
+    pincode: z.ZodNullable<z.ZodOptional<z.ZodString>>;
+    address: z.ZodNullable<z.ZodOptional<z.ZodString>>;
     serviceAreas: z.ZodArray<z.ZodString, "many">;
     cuisines: z.ZodArray<z.ZodString, "many">;
     fssaiNumber: z.ZodString;
     gstNumber: z.ZodNullable<z.ZodOptional<z.ZodString>>;
 }, "strip", z.ZodTypeAny, {
     businessName: string;
+    state: string;
     city: string;
     serviceAreas: string[];
     cuisines: string[];
     fssaiNumber: string;
     description?: string | undefined;
+    pincode?: string | null | undefined;
+    address?: string | null | undefined;
     gstNumber?: string | null | undefined;
 }, {
     businessName: string;
@@ -50,7 +56,10 @@ export declare const catererOnboardingSchema: z.ZodObject<{
     cuisines: string[];
     fssaiNumber: string;
     description?: string | undefined;
+    state?: string | undefined;
     city?: string | undefined;
+    pincode?: string | null | undefined;
+    address?: string | null | undefined;
     gstNumber?: string | null | undefined;
 }>;
 export declare const packageSchema: z.ZodObject<{
@@ -101,8 +110,11 @@ export declare const bookingRequestSchema: z.ZodObject<{
     guestCount: z.ZodNumber;
     venueAddress: z.ZodString;
     city: z.ZodDefault<z.ZodString>;
+    state: z.ZodDefault<z.ZodString>;
+    pincode: z.ZodNullable<z.ZodOptional<z.ZodString>>;
     specialRequests: z.ZodNullable<z.ZodOptional<z.ZodString>>;
 }, "strip", z.ZodTypeAny, {
+    state: string;
     city: string;
     catererId: string;
     packageId: string;
@@ -110,6 +122,7 @@ export declare const bookingRequestSchema: z.ZodObject<{
     eventTime: string;
     guestCount: number;
     venueAddress: string;
+    pincode?: string | null | undefined;
     specialRequests?: string | null | undefined;
 }, {
     catererId: string;
@@ -118,7 +131,9 @@ export declare const bookingRequestSchema: z.ZodObject<{
     eventTime: string;
     guestCount: number;
     venueAddress: string;
+    state?: string | undefined;
     city?: string | undefined;
+    pincode?: string | null | undefined;
     specialRequests?: string | null | undefined;
 }>;
 export declare const createOrderSchema: z.ZodObject<{

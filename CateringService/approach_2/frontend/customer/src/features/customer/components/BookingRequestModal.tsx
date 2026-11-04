@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { X, AlertCircle } from 'lucide-react';
 import { formatPaiseToINR } from '@/lib/formatters';
+import { createBookingRequest } from '../api';
 import type { Caterer, Package, Booking } from '@/types/database';
 
 interface Props {
@@ -14,7 +15,7 @@ interface Props {
 export const BookingRequestModal: React.FC<Props> = ({
   caterer,
   packageItem,
-  customerId,
+  customerId: _customerId,
   onClose,
   onSuccess,
 }) => {
@@ -33,7 +34,7 @@ export const BookingRequestModal: React.FC<Props> = ({
 
   const estimatedTotalPaise = guestCount * packageItem.price_per_plate;
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
 
@@ -48,39 +49,32 @@ export const BookingRequestModal: React.FC<Props> = ({
     }
 
     if (!venueAddress.trim()) {
-      setError('Please provide the venue address in Tirupati.');
+      setError('Please provide the venue address.');
       return;
     }
 
     setSubmitting(true);
 
-    const newBooking: Booking = {
-      id: 'b' + Math.floor(100000000000 + Math.random() * 900000000000),
-      customer_id: customerId,
-      caterer_id: caterer.id,
-      package_id: packageItem.id,
-      event_date: eventDate,
-      event_time: eventTime + ':00',
-      guest_count: guestCount,
-      venue_address: venueAddress.trim(),
-      city: 'Tirupati',
-      special_requests: specialRequests.trim() || null,
-      status: 'requested',
-      total_amount: estimatedTotalPaise,
-      commission_pct: null,
-      commission_amount: null,
-      caterer_note: null,
-      cancelled_by: null,
-      cancel_reason: null,
-      refund_amount: 0,
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-    };
+    try {
+      const res = await createBookingRequest({
+        catererId: caterer.id,
+        packageId: packageItem.id,
+        eventDate,
+        eventTime: eventTime.length === 5 ? `${eventTime}:00` : eventTime,
+        guestCount,
+        venueAddress: venueAddress.trim(),
+        city: caterer.city || 'Tirupati',
+        state: caterer.state || 'Andhra Pradesh',
+        pincode: caterer.pincode || null,
+        specialRequests: specialRequests.trim() || null,
+      });
 
-    setTimeout(() => {
+      onSuccess(res.booking);
+    } catch (err: any) {
+      setError(err.message || 'Failed to submit booking request. Please try again.');
+    } finally {
       setSubmitting(false);
-      onSuccess(newBooking);
-    }, 400);
+    }
   };
 
   return (
@@ -152,11 +146,11 @@ export const BookingRequestModal: React.FC<Props> = ({
           </div>
 
           <div>
-            <label className="block text-xs font-semibold uppercase text-slate-600">Venue Address (Tirupati)</label>
+            <label className="block text-xs font-semibold uppercase text-slate-600">Venue Address ({caterer.city})</label>
             <input
               type="text"
               required
-              placeholder="e.g. Seshadri Kalyana Mandapam, MR Palli, Tirupati"
+              placeholder={`e.g. Banquet Hall / Event Venue, Landmark, ${caterer.city}`}
               value={venueAddress}
               onChange={(e) => setVenueAddress(e.target.value)}
               className="mt-1 w-full rounded-lg border border-slate-300 py-2 px-3 text-xs focus:border-emerald-500 focus:outline-none"

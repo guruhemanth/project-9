@@ -37,7 +37,7 @@ export const Navbar: React.FC = () => {
                   : 'bg-amber-100 text-amber-800'
               }`}
             >
-              {role === 'admin' ? 'Operations Center' : 'Tirupati Caterer Portal'}
+              {role === 'admin' ? 'Operations Center' : 'India Caterer Portal'}
             </span>
           </div>
         </Link>

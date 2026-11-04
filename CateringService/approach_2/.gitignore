@@ -1,0 +1,5 @@
+node_modules/
+.pnpm-task-run-state-v1/
+logs/
+.vite/
+*.log

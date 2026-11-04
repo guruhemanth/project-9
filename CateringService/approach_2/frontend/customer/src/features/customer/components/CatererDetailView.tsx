@@ -4,6 +4,7 @@ import { useAuth } from '@/lib/auth/AuthContext';
 import { Star, MapPin, Check } from 'lucide-react';
 import { formatPaiseToINR } from '@/lib/formatters';
 import { BookingRequestModal } from './BookingRequestModal';
+import { AuthRequiredModal } from './AuthRequiredModal';
 import type { Caterer, Package, PackageItem, Booking } from '@/types/database';
 
 export const CatererDetailView: React.FC = () => {
@@ -72,7 +73,16 @@ export const CatererDetailView: React.FC = () => {
   ]);
 
   const [selectedPackage, setSelectedPackage] = useState<Package | null>(null);
+  const [authRequiredPkg, setAuthRequiredPkg] = useState<Package | null>(null);
   const [bookingSuccess, setBookingSuccess] = useState(false);
+
+  const handleRequestToBook = (pkg: Package) => {
+    if (!user) {
+      setAuthRequiredPkg(pkg);
+    } else {
+      setSelectedPackage(pkg);
+    }
+  };
 
   const handleBookingCreated = (_booking: Booking) => {
     setSelectedPackage(null);
@@ -84,7 +94,7 @@ export const CatererDetailView: React.FC = () => {
       {/* Back button */}
       <div>
         <Link to="/" className="text-xs font-semibold text-emerald-700 hover:text-emerald-800">
-          &larr; Back to all caterers in Tirupati
+          &larr; Back to all caterers
         </Link>
       </div>
 
@@ -114,7 +124,7 @@ export const CatererDetailView: React.FC = () => {
                 Verified FSSAI: {caterer.fssai_number}
               </span>
               <span className="rounded-full bg-slate-100 px-2.5 py-0.5 text-[10px] font-semibold text-slate-700">
-                Tirupati, AP
+                {caterer.city}, {caterer.state || 'India'}
               </span>
             </div>
 
@@ -193,7 +203,7 @@ export const CatererDetailView: React.FC = () => {
                 <span className="text-xs text-slate-500">Instant request submission</span>
                 <button
                   type="button"
-                  onClick={() => setSelectedPackage(pkg)}
+                  onClick={() => handleRequestToBook(pkg)}
                   className="rounded-lg bg-emerald-600 px-4 py-2 text-xs font-semibold text-white shadow-xs hover:bg-emerald-700 transition"
                 >
                   Request to Book
@@ -204,14 +214,23 @@ export const CatererDetailView: React.FC = () => {
         </div>
       </div>
 
-      {/* Booking Modal */}
-      {selectedPackage && (
+      {/* Booking Modal (Authenticated Only) */}
+      {selectedPackage && user && (
         <BookingRequestModal
           caterer={caterer}
           packageItem={selectedPackage}
-          customerId={user?.id || 'c0000000-0000-0000-0000-000000000001'}
+          customerId={user.id}
           onClose={() => setSelectedPackage(null)}
           onSuccess={handleBookingCreated}
+        />
+      )}
+
+      {/* Authentication Required Gate Modal */}
+      {authRequiredPkg && (
+        <AuthRequiredModal
+          catererName={caterer.business_name}
+          packageName={authRequiredPkg.name}
+          onClose={() => setAuthRequiredPkg(null)}
         />
       )}
     </div>

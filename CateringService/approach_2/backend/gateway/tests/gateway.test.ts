@@ -36,6 +36,24 @@ describe('API Gateway Integration', () => {
     expect(res.statusCode).toBe(401);
   });
 
+  it('blocks unauthenticated customer from creating a booking request', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/bookings',
+      payload: {
+        catererId: 'd0000000-0000-0000-0000-000000000001',
+        packageId: 'e0000000-0000-0000-0000-000000000001',
+        eventDate: '2026-11-20',
+        eventTime: '12:30:00',
+        guestCount: 50,
+        venueAddress: 'Test Hall',
+        city: 'Tirupati',
+      },
+    });
+    expect(res.statusCode).toBe(401);
+    expect(res.json().error).toContain('Unauthorized');
+  });
+
   it('blocks unauthenticated or non-admin requests to /api/admin/analytics', async () => {
     // 1. Unauthenticated -> 401
     const unauthRes = await app.inject({

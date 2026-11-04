@@ -32,7 +32,7 @@ export function buildBookingServer() {
         return reply.status(401).send({ error: 'Missing customer identity' });
       }
 
-      const { catererId, packageId, eventDate, eventTime, guestCount, venueAddress, city, specialRequests } =
+      const { catererId, packageId, eventDate, eventTime, guestCount, venueAddress, city, state, pincode, specialRequests } =
         parseResult.data;
 
       // Check caterer availability for eventDate
@@ -63,8 +63,8 @@ export function buildBookingServer() {
 
       const insertRes = await pgPool.query(
         `INSERT INTO order_svc.bookings 
-         (customer_id, caterer_id, package_id, event_date, event_time, guest_count, venue_address, city, special_requests, total_amount_paise, status)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'requested')
+         (customer_id, caterer_id, package_id, event_date, event_time, guest_count, venue_address, city, state, pincode, special_requests, total_amount_paise, status)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'requested')
          RETURNING *`,
         [
           customerId,
@@ -75,6 +75,8 @@ export function buildBookingServer() {
           guestCount,
           venueAddress,
           city,
+          state || 'Andhra Pradesh',
+          pincode || null,
           specialRequests || null,
           totalAmountPaise,
         ]
@@ -345,7 +347,7 @@ export function buildBookingServer() {
         SELECT 
           b.id, b.customer_id, b.caterer_id, b.package_id,
           TO_CHAR(b.event_date, 'YYYY-MM-DD') as event_date,
-          b.event_time, b.guest_count, b.venue_address, b.city,
+          b.event_time, b.guest_count, b.venue_address, b.city, b.state, b.pincode,
           b.special_requests, b.status, b.total_amount_paise,
           b.commission_pct, b.commission_amount_paise, b.payment_type,
           b.advance_pct, b.amount_paid_paise, b.balance_due_paise,

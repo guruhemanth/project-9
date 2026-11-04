@@ -9,7 +9,7 @@ export const RegisterPage: React.FC = () => {
   const [password, setPassword] = useState('');
   const [fullName, setFullName] = useState('');
   const [phone, setPhone] = useState('+91');
-  const [role, setRole] = useState<'customer' | 'caterer'>('customer');
+  const role = 'customer';
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const { login } = useAuth();
@@ -30,12 +30,7 @@ export const RegisterPage: React.FC = () => {
       });
 
       login(res.token, res.user);
-
-      if (role === 'caterer') {
-        navigate('/caterer/onboarding');
-      } else {
-        navigate('/');
-      }
+      navigate('/');
     } catch (err: any) {
       setError(err.message || 'Registration failed');
     } finally {
@@ -47,8 +42,8 @@ export const RegisterPage: React.FC = () => {
     <div className="flex min-h-[85vh] items-center justify-center px-4 py-8">
       <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-6 shadow-sm sm:p-8">
         <div className="mb-6 text-center">
-          <h2 className="text-2xl font-bold text-slate-900">Create an Account</h2>
-          <p className="mt-1 text-sm text-slate-600">Join Tirupati CaterConnect as a customer or caterer</p>
+          <h2 className="text-2xl font-bold text-slate-900">Create Host Account</h2>
+          <p className="mt-1 text-sm text-slate-600">Join Tirupati CaterConnect to book verified caterers</p>
         </div>
 
         {error && (
@@ -59,33 +54,6 @@ export const RegisterPage: React.FC = () => {
         )}
 
         <form onSubmit={handleRegister} className="space-y-4">
-          <div>
-            <label className="mb-1 block text-sm font-medium text-slate-700">I am joining as</label>
-            <div className="grid grid-cols-2 gap-2">
-              <button
-                type="button"
-                onClick={() => setRole('customer')}
-                className={`rounded-lg border py-2 text-sm font-medium transition-colors ${
-                  role === 'customer'
-                    ? 'border-emerald-600 bg-emerald-50 text-emerald-700'
-                    : 'border-slate-200 text-slate-600 hover:bg-slate-50'
-                }`}
-              >
-                Customer
-              </button>
-              <button
-                type="button"
-                onClick={() => setRole('caterer')}
-                className={`rounded-lg border py-2 text-sm font-medium transition-colors ${
-                  role === 'caterer'
-                    ? 'border-emerald-600 bg-emerald-50 text-emerald-700'
-                    : 'border-slate-200 text-slate-600 hover:bg-slate-50'
-                }`}
-              >
-                Caterer
-              </button>
-            </div>
-          </div>
 
           <div>
             <label className="mb-1 block text-sm font-medium text-slate-700">Full Name</label>

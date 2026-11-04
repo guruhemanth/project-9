@@ -11,17 +11,19 @@ export function buildCatererServer() {
   // Health check
   server.get('/health', async () => ({ status: 'ok', service: 'caterer-menu-service' }));
 
-  // List approved caterers with optional filters (cuisine, min/max budget)
+  // List approved caterers with optional filters (cuisine, min/max budget, city, state, search)
   server.get('/api/caterers', async (req, reply) => {
     const query = req.query as {
       cuisine?: string;
       maxPrice?: string;
       city?: string;
+      state?: string;
+      search?: string;
     };
 
     let sql = `
       SELECT 
-        c.id, c.business_name, c.description, c.city, c.service_areas,
+        c.id, c.business_name, c.description, c.city, c.state, c.pincode, c.address, c.service_areas,
         c.cuisines, c.fssai_number, c.gst_number, c.status, c.avg_rating,
         c.review_count, c.created_at,
         COALESCE(
@@ -43,14 +45,30 @@ export function buildCatererServer() {
 
     const params: any[] = [];
 
-    if (query.cuisine) {
+    if (query.cuisine && query.cuisine !== 'all') {
       params.push(query.cuisine);
       sql += ` AND $${params.length} = ANY(c.cuisines)`;
     }
 
-    if (query.city) {
-      params.push(query.city);
-      sql += ` AND LOWER(c.city) = LOWER($${params.length})`;
+    if (query.city && query.city.toLowerCase() !== 'all' && query.city.toLowerCase() !== 'all india') {
+      params.push(query.city.trim());
+      sql += ` AND (
+        LOWER(c.city) = LOWER($${params.length})
+        OR LOWER(c.state) = LOWER($${params.length})
+        OR EXISTS (
+          SELECT 1 FROM unnest(c.service_areas) area
+          WHERE LOWER(area) LIKE '%' || LOWER($${params.length}) || '%'
+        )
+      )`;
+    }
+
+    if (query.search && query.search.trim()) {
+      params.push(`%${query.search.trim().toLowerCase()}%`);
+      sql += ` AND (
+        LOWER(c.business_name) LIKE $${params.length}
+        OR LOWER(COALESCE(c.description, '')) LIKE $${params.length}
+        OR LOWER(c.city) LIKE $${params.length}
+      )`;
     }
 
     sql += ` GROUP BY c.id ORDER BY c.avg_rating DESC, c.created_at DESC`;
@@ -62,6 +80,9 @@ export function buildCatererServer() {
       businessName: row.business_name,
       description: row.description,
       city: row.city,
+      state: row.state,
+      pincode: row.pincode,
+      address: row.address,
       serviceAreas: row.service_areas,
       cuisines: row.cuisines,
       fssaiNumber: row.fssai_number,
@@ -74,6 +95,23 @@ export function buildCatererServer() {
     }));
 
     return reply.send({ caterers });
+  });
+
+  // Get distinct active operating cities
+  server.get('/api/caterers/cities', async (req, reply) => {
+    try {
+      const result = await pgPool.query(`
+        SELECT DISTINCT city, state, count(*)::int as count
+        FROM caterer_svc.caterers
+        WHERE status = 'approved'
+        GROUP BY city, state
+        ORDER BY count DESC, city ASC
+      `);
+      return reply.send({ cities: result.rows });
+    } catch (err: any) {
+      console.error('GET /caterers/cities error:', err);
+      return reply.status(500).send({ error: err.message });
+    }
   });
 
   // Get caterer details by ID (including packages and items)
@@ -118,6 +156,9 @@ export function buildCatererServer() {
           businessName: c.business_name,
           description: c.description,
           city: c.city,
+          state: c.state,
+          pincode: c.pincode,
+          address: c.address,
           serviceAreas: c.service_areas,
           cuisines: c.cuisines,
           fssaiNumber: c.fssai_number,
@@ -162,14 +203,17 @@ export function buildCatererServer() {
 
       const insertRes = await pgPool.query(
         `INSERT INTO caterer_svc.caterers 
-         (owner_id, business_name, description, city, service_areas, cuisines, fssai_number, gst_number, status)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'pending')
+         (owner_id, business_name, description, city, state, pincode, address, service_areas, cuisines, fssai_number, gst_number, status)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'pending')
          RETURNING *`,
         [
           ownerId,
           data.businessName,
           data.description || '',
           data.city || 'Tirupati',
+          data.state || 'Andhra Pradesh',
+          data.pincode || null,
+          data.address || null,
           data.serviceAreas || [],
           data.cuisines,
           data.fssaiNumber,

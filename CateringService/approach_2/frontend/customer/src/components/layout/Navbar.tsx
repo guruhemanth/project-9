@@ -22,7 +22,7 @@ export const Navbar: React.FC = () => {
           <div>
             <span className="text-lg font-bold tracking-tight text-slate-900">CaterConnect</span>
             <span className="ml-1.5 rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-semibold text-emerald-800">
-              Tirupati
+              India
             </span>
           </div>
         </Link>
