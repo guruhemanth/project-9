@@ -15,6 +15,7 @@ import {
   loggerRedactionConfig,
   getAuthenticatedUser,
 } from '@caterconnect/shared';
+import { enqueueOutboxNotification } from './outbox';
 
 export function buildPaymentServer() {
   const env = validateEnv(createPaymentEnvSchema(), process.env);
@@ -320,6 +321,30 @@ export function buildPaymentServer() {
                    VALUES ($1, $2, 'paid', $3)`,
                   [bookingId, booking.status, `Payment captured via Razorpay ID: ${paymentId}`]
                 );
+
+                // Enqueue Outbox notification: booking_paid / payment_captured -> both parties
+                const bDetails = await client.query(
+                  `SELECT b.customer_id, b.event_date, c.owner_id as caterer_owner_id, c.business_name
+                   FROM order_svc.bookings b
+                   JOIN caterer_svc.caterers c ON b.caterer_id = c.id
+                   WHERE b.id = $1`,
+                  [bookingId]
+                );
+                if (bDetails.rows.length > 0) {
+                  const bd = bDetails.rows[0];
+                  await enqueueOutboxNotification(
+                    'booking_paid',
+                    {
+                      bookingId,
+                      customerId: bd.customer_id,
+                      catererOwnerId: bd.caterer_owner_id,
+                      catererName: bd.business_name,
+                      eventDate: bd.event_date,
+                      amountPaidINR: `₹${((amountPaise || payRow.amount_paise) / 100).toLocaleString('en-IN')}`,
+                    },
+                    client
+                  );
+                }
               }
             }
 

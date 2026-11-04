@@ -70,6 +70,15 @@ export interface PaymentEnv extends DbEnv {
   RAZORPAY_WEBHOOK_SECRET: string;
 }
 
+export interface NotificationEnv extends DbEnv {
+  NOTIFY_MODE: 'log' | 'live';
+  VAPID_PUBLIC_KEY?: string;
+  VAPID_PRIVATE_KEY?: string;
+  VAPID_SUBJECT?: string;
+  WHATSAPP_TOKEN?: string;
+  SMS_API_KEY?: string;
+}
+
 /**
  * Database environment schema.
  * Rejects startup in non-test environments if DATABASE_URL (or APP_DATABASE_URL) is absent.
@@ -265,6 +274,51 @@ export function createPaymentEnvSchema(): z.ZodType<PaymentEnv, z.ZodTypeDef, un
       RAZORPAY_KEY_ID: keyId,
       RAZORPAY_KEY_SECRET: keySecret,
       RAZORPAY_WEBHOOK_SECRET: webhookSecret,
+    };
+  });
+}
+
+/**
+ * Notification Service environment schema.
+ * Supports NOTIFY_MODE ('log' | 'live') and VAPID keys for Web Push.
+ */
+export function createNotificationEnvSchema(): z.ZodType<NotificationEnv, z.ZodTypeDef, unknown> {
+  return z.object({
+    NODE_ENV: appEnvSchema,
+    PORT: z.coerce.number().default(4005),
+    ALLOWED_ORIGINS: z.string().optional(),
+    APP_DATABASE_URL: z.string().optional(),
+    DATABASE_URL: z.string().optional(),
+    NOTIFY_MODE: z.enum(['log', 'live']).default('log'),
+    VAPID_PUBLIC_KEY: z.string().optional(),
+    VAPID_PRIVATE_KEY: z.string().optional(),
+    VAPID_SUBJECT: z.string().default('mailto:support@caterconnect.in'),
+    WHATSAPP_TOKEN: z.string().optional(),
+    SMS_API_KEY: z.string().optional(),
+  }).transform((data): NotificationEnv => {
+    const isTesting = isTestEnv(data.NODE_ENV);
+    const rawUrl = data.APP_DATABASE_URL || data.DATABASE_URL;
+    let dbUrl = rawUrl;
+
+    if (isTesting && (!dbUrl || (!dbUrl.includes('caterconnect') && !dbUrl.includes('54322')))) {
+      dbUrl = 'postgresql://postgres:postgres@127.0.0.1:54322/postgres';
+    } else if (!dbUrl) {
+      throw new Error(
+        '[Environment Validation] Fatal: DATABASE_URL is required in non-test environments.'
+      );
+    }
+
+    return {
+      NODE_ENV: data.NODE_ENV,
+      PORT: data.PORT,
+      ALLOWED_ORIGINS: data.ALLOWED_ORIGINS,
+      DATABASE_URL: dbUrl,
+      NOTIFY_MODE: data.NOTIFY_MODE,
+      VAPID_PUBLIC_KEY: data.VAPID_PUBLIC_KEY,
+      VAPID_PRIVATE_KEY: data.VAPID_PRIVATE_KEY,
+      VAPID_SUBJECT: data.VAPID_SUBJECT,
+      WHATSAPP_TOKEN: data.WHATSAPP_TOKEN,
+      SMS_API_KEY: data.SMS_API_KEY,
     };
   });
 }

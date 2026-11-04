@@ -14,6 +14,7 @@ import {
   loggerRedactionConfig,
   getAuthenticatedUser,
 } from '@caterconnect/shared';
+import { enqueueOutboxNotification } from './outbox';
 
 export function buildBookingServer() {
   const env = validateEnv(createDbEnvSchema(), process.env);
@@ -148,6 +149,26 @@ export function buildBookingServer() {
          VALUES ($1, NULL, 'requested', $2)`,
         [booking.id, customerId]
       );
+
+      // Enqueue Outbox event: booking_requested -> caterer
+      const catererOwnerRes = await pgPool.query(
+        `SELECT c.owner_id, c.business_name, u.phone 
+         FROM caterer_svc.caterers c
+         JOIN auth_svc.users u ON c.owner_id = u.id
+         WHERE c.id = $1`,
+        [catererId]
+      );
+      const catererOwner = catererOwnerRes.rows[0];
+      await enqueueOutboxNotification('booking_requested', {
+        bookingId: booking.id,
+        customerId,
+        catererId,
+        catererOwnerId: catererOwner?.owner_id,
+        catererPhone: catererOwner?.phone,
+        catererName: catererOwner?.business_name,
+        eventDate,
+        guestCount,
+      });
 
       return reply.status(201).send({ booking });
     } catch (err: any) {
@@ -288,6 +309,19 @@ export function buildBookingServer() {
         [id, currentStatus, authUser.userId, catererNote]
       );
 
+      // Enqueue Outbox event: booking_accepted -> customer
+      const custRes = await pgPool.query('SELECT email, phone FROM auth_svc.users WHERE id = $1', [booking.customer_id]);
+      const cust = custRes.rows[0];
+      const catRes = await pgPool.query('SELECT business_name FROM caterer_svc.caterers WHERE id = $1', [booking.caterer_id]);
+      await enqueueOutboxNotification('booking_accepted', {
+        bookingId: id,
+        customerId: booking.customer_id,
+        recipientPhone: cust?.phone,
+        catererName: catRes.rows[0]?.business_name,
+        eventDate: booking.event_date,
+        totalAmountINR: `₹${(totalPaise / 100).toLocaleString('en-IN')}`,
+      });
+
       return reply.send({ booking: updateRes.rows[0] });
     } catch (err: any) {
       req.log.error(err);
@@ -329,6 +363,16 @@ export function buildBookingServer() {
          VALUES ($1, $2, 'rejected', $3, $4)`,
         [id, currentStatus, authUser.userId, reason]
       );
+
+      // Enqueue Outbox event: booking_rejected -> customer
+      const catRes = await pgPool.query('SELECT business_name FROM caterer_svc.caterers WHERE id = $1', [booking.caterer_id]);
+      await enqueueOutboxNotification('booking_rejected', {
+        bookingId: id,
+        customerId: booking.customer_id,
+        catererName: catRes.rows[0]?.business_name,
+        eventDate: booking.event_date,
+        reason,
+      });
 
       return reply.send({ booking: updateRes.rows[0] });
     } catch (err: any) {
@@ -402,6 +446,16 @@ export function buildBookingServer() {
         [id]
       );
 
+      // Enqueue Outbox event: booking_cancelled -> other party
+      await enqueueOutboxNotification('booking_cancelled', {
+        bookingId: id,
+        customerId: row.customer_id,
+        catererOwnerId: row.caterer_owner_id,
+        cancelledBy: effectiveRole,
+        eventDate: row.event_date,
+        refundINR: refundPaise > 0 ? `₹${(refundPaise / 100).toLocaleString('en-IN')}` : '₹0',
+      });
+
       return reply.send({
         booking: updateRes.rows[0],
         refundAmountPaise: refundPaise,
@@ -444,6 +498,15 @@ export function buildBookingServer() {
          VALUES ($1, $2, 'completed', $3)`,
         [id, currentStatus, authUser.userId]
       );
+
+      // Enqueue Outbox event: booking_completed -> customer (review prompt)
+      const catRes = await pgPool.query('SELECT business_name FROM caterer_svc.caterers WHERE id = $1', [booking.caterer_id]);
+      await enqueueOutboxNotification('booking_completed', {
+        bookingId: id,
+        customerId: booking.customer_id,
+        catererName: catRes.rows[0]?.business_name,
+        eventDate: booking.event_date,
+      });
 
       return reply.send({ booking: updateRes.rows[0] });
     } catch (err: any) {
