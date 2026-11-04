@@ -17,6 +17,9 @@ services:
       - ./database/05_notification_schema.sql:/docker-entrypoint-initdb.d/05_notification_schema.sql
       - ./database/06_chat_schema.sql:/docker-entrypoint-initdb.d/06_chat_schema.sql
       - ./database/07_pan_india_location.sql:/docker-entrypoint-initdb.d/07_pan_india_location.sql
+      - ./database/08_dynamic_commission.sql:/docker-entrypoint-initdb.d/08_dynamic_commission.sql
+      - ./database/09_google_auth.sql:/docker-entrypoint-initdb.d/09_google_auth.sql
+      - ./database/10_push_and_outbox.sql:/docker-entrypoint-initdb.d/10_push_and_outbox.sql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 10s

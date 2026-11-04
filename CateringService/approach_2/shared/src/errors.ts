@@ -74,3 +74,23 @@ export function registerCentralizedErrorHandler(server: FastifyInstance, service
     return reply.status(statusCode).send(payload);
   });
 }
+
+/**
+ * Registers graceful shutdown signal handlers (SIGTERM, SIGINT) for Fastify microservices.
+ */
+export function registerGracefulShutdown(server: FastifyInstance, serviceName: string): void {
+  const shutdown = async (signal: string) => {
+    server.log.info({ service: serviceName, signal }, 'Received termination signal, starting graceful shutdown...');
+    try {
+      await server.close();
+      server.log.info({ service: serviceName }, 'Server closed successfully.');
+      process.exit(0);
+    } catch (err) {
+      server.log.error({ service: serviceName, err }, 'Error during graceful shutdown, forcing exit.');
+      process.exit(1);
+    }
+  };
+
+  process.once('SIGTERM', () => shutdown('SIGTERM'));
+  process.once('SIGINT', () => shutdown('SIGINT'));
+}
