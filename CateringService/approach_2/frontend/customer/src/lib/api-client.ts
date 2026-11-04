@@ -1,4 +1,9 @@
-const API_GATEWAY_URL = import.meta.env.VITE_API_GATEWAY_URL || 'http://localhost:8080';
+const API_BASE_URL =
+  import.meta.env.VITE_API_BASE_URL ||
+  import.meta.env.VITE_API_GATEWAY_URL ||
+  (import.meta.env.DEV ? 'http://localhost:8080' : '');
+
+export { API_BASE_URL };
 
 export async function apiFetch<T = any>(
   endpoint: string,
@@ -14,7 +19,7 @@ export async function apiFetch<T = any>(
     headers['Authorization'] = `Bearer ${token}`;
   }
 
-  const response = await fetch(`${API_GATEWAY_URL}${endpoint}`, {
+  const response = await fetch(`${API_BASE_URL}${endpoint}`, {
     ...options,
     headers,
   });

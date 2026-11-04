@@ -1,17 +1,51 @@
 import Fastify from 'fastify';
 import fastifyCors from '@fastify/cors';
+import fastifyHelmet from '@fastify/helmet';
 import fastifyWebsocket from '@fastify/websocket';
 import { pgPool } from './db';
-import { sendMessageSchema, UserRole } from '@caterconnect/shared';
+import {
+  sendMessageSchema,
+  UserRole,
+  validateEnv,
+  createDbEnvSchema,
+  buildCorsOptions,
+  registerCentralizedErrorHandler,
+  loggerRedactionConfig,
+} from '@caterconnect/shared';
 
 export function buildChatServer() {
-  const server = Fastify({ logger: false });
+  const env = validateEnv(createDbEnvSchema(), process.env);
+  const server = Fastify({
+    logger: {
+      redact: loggerRedactionConfig,
+    },
+    bodyLimit: 1048576,
+    connectionTimeout: 10000,
+    requestTimeout: 15000,
+  });
 
-  server.register(fastifyCors, { origin: true });
+  registerCentralizedErrorHandler(server, 'chat-service');
+
+  server.addHook('onClose', async () => {
+    if (!(pgPool as any).ending) {
+      await pgPool.end();
+    }
+  });
+
+  server.register(fastifyHelmet, { contentSecurityPolicy: false });
+  server.register(fastifyCors, buildCorsOptions(env.ALLOWED_ORIGINS, env.NODE_ENV));
   server.register(fastifyWebsocket);
 
-  // Health check
+  // Health & Readiness checks
   server.get('/health', async () => ({ status: 'ok', service: 'chat-service' }));
+  server.get('/ready', async (_req, reply) => {
+    try {
+      await pgPool.query('SELECT 1');
+      return { status: 'ready', database: 'connected', service: 'chat-service' };
+    } catch (err: any) {
+      return reply.status(503).send({ status: 'not_ready', database: 'disconnected', service: 'chat-service' });
+    }
+  });
 
   // Get or Create thread for a booking
   server.get('/api/chat/threads/booking/:bookingId', async (req, reply) => {

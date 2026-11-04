@@ -1,15 +1,51 @@
 import Fastify from 'fastify';
 import fastifyCors from '@fastify/cors';
+import fastifyHelmet from '@fastify/helmet';
 import { pgPool } from './db';
-import { catererOnboardingSchema, packageSchema, blackoutDateSchema, CatererStatus } from '@caterconnect/shared';
+import {
+  catererOnboardingSchema,
+  packageSchema,
+  blackoutDateSchema,
+  CatererStatus,
+  validateEnv,
+  createDbEnvSchema,
+  buildCorsOptions,
+  registerCentralizedErrorHandler,
+  loggerRedactionConfig,
+} from '@caterconnect/shared';
 
 export function buildCatererServer() {
-  const server = Fastify({ logger: false });
+  const env = validateEnv(createDbEnvSchema(), process.env);
+  const server = Fastify({
+    logger: {
+      redact: loggerRedactionConfig,
+    },
+    bodyLimit: 1048576,
+    connectionTimeout: 10000,
+    requestTimeout: 15000,
+  });
 
-  server.register(fastifyCors, { origin: true });
+  registerCentralizedErrorHandler(server, 'caterer-menu-service');
 
-  // Health check
+  server.addHook('onClose', async () => {
+    if (!(pgPool as any).ending) {
+      await pgPool.end();
+    }
+  });
+
+  server.register(fastifyHelmet, { contentSecurityPolicy: false });
+  server.register(fastifyCors, buildCorsOptions(env.ALLOWED_ORIGINS, env.NODE_ENV));
+
+  // Health & Readiness checks
   server.get('/health', async () => ({ status: 'ok', service: 'caterer-menu-service' }));
+  server.get('/ready', async (_req, reply) => {
+    try {
+      await pgPool.query('SELECT 1');
+      return { status: 'ready', database: 'connected', service: 'caterer-menu-service' };
+    } catch (err: any) {
+      return reply.status(503).send({ status: 'not_ready', database: 'disconnected', service: 'caterer-menu-service' });
+    }
+  });
 
   // List approved caterers with optional filters (cuisine, min/max budget, city, state, search)
   server.get('/api/caterers', async (req, reply) => {

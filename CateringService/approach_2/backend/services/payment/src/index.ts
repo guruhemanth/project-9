@@ -1,18 +1,45 @@
 import Fastify from 'fastify';
 import fastifyCors from '@fastify/cors';
+import fastifyHelmet from '@fastify/helmet';
 import crypto from 'crypto';
 import Razorpay from 'razorpay';
 import { pgPool } from './db';
-import { createOrderSchema, disburseSettlementSchema, PaymentOption } from '@caterconnect/shared';
+import {
+  createOrderSchema,
+  disburseSettlementSchema,
+  PaymentOption,
+  validateEnv,
+  createPaymentEnvSchema,
+  buildCorsOptions,
+  registerCentralizedErrorHandler,
+  loggerRedactionConfig,
+} from '@caterconnect/shared';
 
 export function buildPaymentServer() {
-  const server = Fastify({ logger: false });
+  const env = validateEnv(createPaymentEnvSchema(), process.env);
+  const server = Fastify({
+    logger: {
+      redact: loggerRedactionConfig,
+    },
+    bodyLimit: 1048576,
+    connectionTimeout: 10000,
+    requestTimeout: 15000,
+  });
 
-  server.register(fastifyCors, { origin: true });
+  registerCentralizedErrorHandler(server, 'payment-service');
 
-  const razorpayKeyId = process.env.RAZORPAY_KEY_ID || 'rzp_test_placeholder_key';
-  const razorpayKeySecret = process.env.RAZORPAY_KEY_SECRET || 'rzp_test_placeholder_secret';
-  const webhookSecret = process.env.RAZORPAY_WEBHOOK_SECRET || 'caterconnect_test_webhook_secret_key';
+  server.addHook('onClose', async () => {
+    if (!(pgPool as any).ending) {
+      await pgPool.end();
+    }
+  });
+
+  server.register(fastifyHelmet, { contentSecurityPolicy: false });
+  server.register(fastifyCors, buildCorsOptions(env.ALLOWED_ORIGINS, env.NODE_ENV));
+
+  const razorpayKeyId = env.RAZORPAY_KEY_ID;
+  const razorpayKeySecret = env.RAZORPAY_KEY_SECRET;
+  const webhookSecret = env.RAZORPAY_WEBHOOK_SECRET;
 
   let razorpayInstance: Razorpay | null = null;
   try {
@@ -24,8 +51,16 @@ export function buildPaymentServer() {
     console.warn('Razorpay client initialization warning:', err);
   }
 
-  // Health check
+  // Health & Readiness checks
   server.get('/health', async () => ({ status: 'ok', service: 'payment-service' }));
+  server.get('/ready', async (_req, reply) => {
+    try {
+      await pgPool.query('SELECT 1');
+      return { status: 'ready', database: 'connected', service: 'payment-service' };
+    } catch (err: any) {
+      return reply.status(503).send({ status: 'not_ready', database: 'disconnected', service: 'payment-service' });
+    }
+  });
 
   // Create Razorpay Order with Dual Options: Option 1 (100% Full) or Option 2 (25% Advance)
   server.post('/api/payments/create-order', async (req, reply) => {
@@ -69,21 +104,58 @@ export function buildPaymentServer() {
         orderAmountPaise = totalPaise;
       }
 
-      // Generate order ID via Razorpay or deterministic mock for test
-      let rzpOrderId = `order_${Date.now()}_${Math.random().toString(36).substring(7)}`;
+      // Generate order ID via Razorpay (production must create live order or fail fast)
+      let rzpOrderId = '';
 
-      if (process.env.NODE_ENV !== 'test' && razorpayInstance && !razorpayKeyId.includes('placeholder')) {
-        const rzpOrder = await razorpayInstance.orders.create({
-          amount: orderAmountPaise,
-          currency: 'INR',
-          receipt: bookingId.substring(0, 40),
-          notes: {
-            bookingId,
-            paymentOption,
-            advancePct: pct.toString(),
-          },
-        });
-        rzpOrderId = rzpOrder.id;
+      if (env.NODE_ENV === 'production') {
+        if (!razorpayInstance) {
+          return reply.status(502).send({
+            statusCode: 502,
+            error: 'Bad Gateway',
+            message: 'Razorpay payment client initialization failed.',
+          });
+        }
+        try {
+          const rzpOrder = await razorpayInstance.orders.create({
+            amount: orderAmountPaise,
+            currency: 'INR',
+            receipt: bookingId.substring(0, 40),
+            notes: {
+              bookingId,
+              paymentOption,
+              advancePct: pct.toString(),
+            },
+          });
+          rzpOrderId = rzpOrder.id;
+        } catch (gatewayErr: any) {
+          req.log.error({ gatewayErr }, 'Razorpay live order creation failed');
+          return reply.status(502).send({
+            statusCode: 502,
+            error: 'Bad Gateway',
+            message: 'Failed to create payment order with payment gateway.',
+          });
+        }
+      } else {
+        // Development or test environment mock fallback
+        if (razorpayInstance && !razorpayKeyId.startsWith('test_rzp')) {
+          try {
+            const rzpOrder = await razorpayInstance.orders.create({
+              amount: orderAmountPaise,
+              currency: 'INR',
+              receipt: bookingId.substring(0, 40),
+              notes: {
+                bookingId,
+                paymentOption,
+                advancePct: pct.toString(),
+              },
+            });
+            rzpOrderId = rzpOrder.id;
+          } catch {
+            rzpOrderId = `order_${Date.now()}_${Math.random().toString(36).substring(7)}`;
+          }
+        } else {
+          rzpOrderId = `order_${Date.now()}_${Math.random().toString(36).substring(7)}`;
+        }
       }
 
       // Record created payment in pay_svc.payments
@@ -119,19 +191,26 @@ export function buildPaymentServer() {
   });
 
   // Razorpay Webhook Handler
-  // Verifies HMAC SHA-256 signature and updates booking to 'paid'
+  // Verifies HMAC SHA-256 signature using timing-safe comparison and idempotently updates booking to 'paid'
   server.post('/api/payments/webhook', async (req, reply) => {
     try {
       const signature = req.headers['x-razorpay-signature'] as string;
+      if (!signature) {
+        return reply.status(400).send({ error: 'Missing x-razorpay-signature header' });
+      }
+
       const rawBody = typeof req.body === 'string' ? req.body : JSON.stringify(req.body);
 
-      // Verify HMAC-SHA256 signature
+      // Verify HMAC-SHA256 signature with timingSafeEqual to prevent timing attacks
       const expectedSignature = crypto
         .createHmac('sha256', webhookSecret)
         .update(rawBody)
         .digest('hex');
 
-      if (signature !== expectedSignature) {
+      const sigBuf = Buffer.from(signature, 'utf8');
+      const expectedBuf = Buffer.from(expectedSignature, 'utf8');
+
+      if (sigBuf.length !== expectedBuf.length || !crypto.timingSafeEqual(sigBuf, expectedBuf)) {
         return reply.status(400).send({ error: 'Invalid Razorpay webhook signature' });
       }
 
@@ -152,6 +231,12 @@ export function buildPaymentServer() {
 
           if (pRes.rows.length > 0) {
             const payRow = pRes.rows[0];
+
+            // Idempotency: If this payment was already captured, acknowledge immediately without duplicate processing
+            if (payRow.status === 'captured') {
+              return reply.send({ received: true, idempotent: true });
+            }
+
             const bookingId = payRow.booking_id;
 
             // Update payment record to captured

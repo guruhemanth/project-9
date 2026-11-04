@@ -22,13 +22,21 @@ describe('Payment Service Integration (Dual Options & Webhook)', () => {
 
   afterAll(async () => {
     await app.close();
-    await pgPool.end();
+    if (!(pgPool as any).ending) {
+      await pgPool.end();
+    }
   });
 
   it('responds with 200 on /health', async () => {
     const res = await app.inject({ method: 'GET', url: '/health' });
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({ status: 'ok', service: 'payment-service' });
+  });
+
+  it('responds with 200 on /ready when postgres is connected', async () => {
+    const res = await app.inject({ method: 'GET', url: '/ready' });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toHaveProperty('database', 'connected');
   });
 
   it('creates an advance order (Option 2: 25% Advance lock)', async () => {
@@ -73,7 +81,7 @@ describe('Payment Service Integration (Dual Options & Webhook)', () => {
   });
 
   it('verifies razorpay webhook with valid HMAC signature and transitions booking to paid with balance tracked', async () => {
-    const webhookSecret = 'caterconnect_test_webhook_secret_key';
+    const webhookSecret = process.env.RAZORPAY_WEBHOOK_SECRET || 'test_webhook_secret_vitest_hmac';
     const testPaymentId = `pay_${Date.now()}_${Math.floor(Math.random() * 10000)}`;
     const payload = JSON.stringify({
       event: 'payment.captured',
@@ -103,6 +111,19 @@ describe('Payment Service Integration (Dual Options & Webhook)', () => {
 
     expect(res.statusCode).toBe(200);
     expect(res.json().received).toBe(true);
+
+    // Verify idempotency: duplicate webhook delivery is recognized and ignored safely
+    const dupRes = await app.inject({
+      method: 'POST',
+      url: '/api/payments/webhook',
+      headers: {
+        'x-razorpay-signature': signature,
+        'content-type': 'application/json',
+      },
+      payload,
+    });
+    expect(dupRes.statusCode).toBe(200);
+    expect(dupRes.json().idempotent).toBe(true);
 
     // Verify database state: booking is 'paid', amount_paid_paise = 25000, balance_due_paise = 75000
     const bCheck = await pgPool.query('SELECT status, amount_paid_paise, balance_due_paise FROM order_svc.bookings WHERE id = $1', [testBookingId]);

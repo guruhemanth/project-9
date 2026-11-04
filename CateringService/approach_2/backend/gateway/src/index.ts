@@ -1,35 +1,72 @@
 import Fastify from 'fastify';
 import fastifyCors from '@fastify/cors';
+import fastifyHelmet from '@fastify/helmet';
+import fastifyRateLimit from '@fastify/rate-limit';
 import fastifyHttpProxy from '@fastify/http-proxy';
 import fastifyJwt from '@fastify/jwt';
+import {
+  validateEnv,
+  createGatewayEnvSchema,
+  buildCorsOptions,
+  registerCentralizedErrorHandler,
+  loggerRedactionConfig,
+} from '@caterconnect/shared';
 
 export function buildGatewayServer() {
-  const server = Fastify({ logger: false });
-
-  server.register(fastifyCors, {
-    origin: true,
-    credentials: true,
-    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+  const env = validateEnv(createGatewayEnvSchema(), process.env);
+  const server = Fastify({
+    logger: {
+      redact: loggerRedactionConfig,
+    },
+    bodyLimit: 1048576, // 1MB payload limit
+    connectionTimeout: 10000, // 10s
+    requestTimeout: 15000, // 15s
   });
+
+  registerCentralizedErrorHandler(server, 'api-gateway');
+
+  server.register(fastifyHelmet, {
+    contentSecurityPolicy: false,
+  });
+
+  server.register(fastifyRateLimit, {
+    global: true,
+    max: (req) => {
+      // Stricter rate limit on sensitive authentication endpoints
+      if (req.url?.startsWith('/api/auth/login') || req.url?.startsWith('/api/auth/register')) {
+        return 10;
+      }
+      return 100;
+    },
+    timeWindow: '1 minute',
+  });
+
+  server.register(fastifyCors, buildCorsOptions(env.ALLOWED_ORIGINS, env.NODE_ENV));
 
   server.register(fastifyJwt, {
-    secret: process.env.JWT_SECRET || 'super-secret-jwt-token-with-at-least-32-characters-long',
+    secret: env.JWT_SECRET,
   });
 
-  // Health check
+  // Health & Readiness checks
   server.get('/health', async () => ({
     status: 'ok',
     gateway: 'caterconnect-api-gateway',
     timestamp: new Date().toISOString(),
   }));
 
+  server.get('/ready', async () => ({
+    status: 'ready',
+    gateway: 'caterconnect-api-gateway',
+    timestamp: new Date().toISOString(),
+  }));
+
   // Service URLs
-  const AUTH_URL = process.env.AUTH_SERVICE_URL || 'http://127.0.0.1:4001';
-  const CATERER_URL = process.env.CATERER_SERVICE_URL || 'http://127.0.0.1:4002';
-  const BOOKING_URL = process.env.BOOKING_SERVICE_URL || 'http://127.0.0.1:4003';
-  const PAYMENT_URL = process.env.PAYMENT_SERVICE_URL || 'http://127.0.0.1:4004';
-  const NOTIFY_URL = process.env.NOTIFICATION_SERVICE_URL || 'http://127.0.0.1:4005';
-  const CHAT_URL = process.env.CHAT_SERVICE_URL || 'http://127.0.0.1:4006';
+  const AUTH_URL = env.AUTH_SERVICE_URL;
+  const CATERER_URL = env.CATERER_SERVICE_URL;
+  const BOOKING_URL = env.BOOKING_SERVICE_URL;
+  const PAYMENT_URL = env.PAYMENT_SERVICE_URL;
+  const NOTIFY_URL = env.NOTIFICATION_SERVICE_URL;
+  const CHAT_URL = env.CHAT_SERVICE_URL;
 
   // 1. Auth Service Routes
   server.register(fastifyHttpProxy, {

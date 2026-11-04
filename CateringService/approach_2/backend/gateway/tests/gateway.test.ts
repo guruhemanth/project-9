@@ -18,6 +18,12 @@ describe('API Gateway Integration', () => {
     expect(res.json()).toHaveProperty('gateway', 'caterconnect-api-gateway');
   });
 
+  it('responds with 200 on /ready', async () => {
+    const res = await app.inject({ method: 'GET', url: '/ready' });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toHaveProperty('status', 'ready');
+  });
+
   it('blocks unauthenticated mutation requests to /api/caterers/onboard', async () => {
     const res = await app.inject({
       method: 'POST',
@@ -78,5 +84,40 @@ describe('API Gateway Integration', () => {
     });
     expect(forbiddenRes.statusCode).toBe(403);
     expect(forbiddenRes.json().error).toContain('Forbidden');
+  });
+
+  it('rejects requests from disallowed Origin headers', async () => {
+    const res = await app.inject({
+      method: 'GET',
+      url: '/health',
+      headers: {
+        origin: 'https://evil-unauthorized-phishing-domain.com',
+      },
+    });
+    // Disallowed origin returns 500 error from CORS pre-validation
+    expect(res.statusCode).toBe(500);
+    expect(res.json().message).toContain('not allowed by CaterConnect CORS policy');
+  });
+
+  it('allows requests from valid allowed origins', async () => {
+    const res = await app.inject({
+      method: 'GET',
+      url: '/health',
+      headers: {
+        origin: 'http://localhost:3000',
+      },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.headers['access-control-allow-origin']).toBe('http://localhost:3000');
+  });
+
+  it('sets security headers via fastify-helmet', async () => {
+    const res = await app.inject({
+      method: 'GET',
+      url: '/health',
+    });
+    expect(res.headers['x-dns-prefetch-control']).toBe('off');
+    expect(res.headers['x-frame-options']).toBe('SAMEORIGIN');
+    expect(res.headers['strict-transport-security']).toBeDefined();
   });
 });

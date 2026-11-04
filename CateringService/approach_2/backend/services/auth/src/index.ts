@@ -1,20 +1,55 @@
 import Fastify from 'fastify';
 import fastifyCors from '@fastify/cors';
+import fastifyHelmet from '@fastify/helmet';
 import fastifyJwt from '@fastify/jwt';
 import bcrypt from 'bcryptjs';
-import { registerSchema, loginSchema } from '@caterconnect/shared';
+import {
+  registerSchema,
+  loginSchema,
+  validateEnv,
+  createAuthEnvSchema,
+  buildCorsOptions,
+  registerCentralizedErrorHandler,
+  loggerRedactionConfig,
+} from '@caterconnect/shared';
+import { pgPool } from './db';
 import { findUserByEmail, findUserById, createUser } from './users';
 
 export function buildAuthServer() {
-  const server = Fastify({ logger: false });
-
-  server.register(fastifyCors, { origin: true });
-  server.register(fastifyJwt, {
-    secret: process.env.JWT_SECRET || 'super-secret-jwt-token-with-at-least-32-characters-long',
+  const env = validateEnv(createAuthEnvSchema(), process.env);
+  const server = Fastify({
+    logger: {
+      redact: loggerRedactionConfig,
+    },
+    bodyLimit: 1048576,
+    connectionTimeout: 10000,
+    requestTimeout: 15000,
   });
 
-  // Health check
+  registerCentralizedErrorHandler(server, 'auth-service');
+
+  server.addHook('onClose', async () => {
+    if (!(pgPool as any).ending) {
+      await pgPool.end();
+    }
+  });
+
+  server.register(fastifyHelmet, { contentSecurityPolicy: false });
+  server.register(fastifyCors, buildCorsOptions(env.ALLOWED_ORIGINS, env.NODE_ENV));
+  server.register(fastifyJwt, {
+    secret: env.JWT_SECRET,
+  });
+
+  // Health & Readiness checks
   server.get('/health', async () => ({ status: 'ok', service: 'auth-service' }));
+  server.get('/ready', async (_req, reply) => {
+    try {
+      await pgPool.query('SELECT 1');
+      return { status: 'ready', database: 'connected', service: 'auth-service' };
+    } catch (err: any) {
+      return reply.status(503).send({ status: 'not_ready', database: 'disconnected', service: 'auth-service' });
+    }
+  });
 
   // Register
   server.post('/api/auth/register', async (req, reply) => {

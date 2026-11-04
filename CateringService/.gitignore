@@ -1,0 +1,50 @@
+# Environment files & Secrets
+.env
+.env.*
+*.env
+!.env.example
+!.env.template
+*.pem
+*.key
+*.crt
+*.p12
+secrets/
+
+# Dependencies & Build Outputs
+node_modules/
+**/node_modules/
+dist/
+**/dist/
+build/
+**/build/
+.vite/
+**/.vite/
+.turbo/
+**/.turbo/
+.pnpm-task-run-state-v1/
+**/.pnpm-task-run-state-v1/
+
+# Logs & Runtime Data
+logs/
+**/logs/
+*.log
+npm-debug.log*
+pnpm-debug.log*
+pids
+*.pid
+
+# Database & Docker Volumes
+postgres-data/
+**/postgres-data/
+pgdata/
+**/pgdata/
+*.sql.gz
+*.dump
+
+# OS & Editor Files
+.DS_Store
+Thumbs.db
+ThumbsInfo
+.idea/
+.vscode/*
+!.vscode/extensions.json

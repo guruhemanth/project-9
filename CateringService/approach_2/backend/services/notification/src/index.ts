@@ -1,7 +1,15 @@
 import Fastify from 'fastify';
 import fastifyCors from '@fastify/cors';
+import fastifyHelmet from '@fastify/helmet';
 import { pgPool } from './db';
-import { notificationDispatchSchema } from '@caterconnect/shared';
+import {
+  notificationDispatchSchema,
+  validateEnv,
+  createDbEnvSchema,
+  buildCorsOptions,
+  registerCentralizedErrorHandler,
+  loggerRedactionConfig,
+} from '@caterconnect/shared';
 
 function renderMessage(template: string, params: Record<string, any>): string {
   switch (template) {
@@ -19,12 +27,37 @@ function renderMessage(template: string, params: Record<string, any>): string {
 }
 
 export function buildNotificationServer() {
-  const server = Fastify({ logger: false });
+  const env = validateEnv(createDbEnvSchema(), process.env);
+  const server = Fastify({
+    logger: {
+      redact: loggerRedactionConfig,
+    },
+    bodyLimit: 1048576,
+    connectionTimeout: 10000,
+    requestTimeout: 15000,
+  });
 
-  server.register(fastifyCors, { origin: true });
+  registerCentralizedErrorHandler(server, 'notification-service');
 
-  // Health check
+  server.addHook('onClose', async () => {
+    if (!(pgPool as any).ending) {
+      await pgPool.end();
+    }
+  });
+
+  server.register(fastifyHelmet, { contentSecurityPolicy: false });
+  server.register(fastifyCors, buildCorsOptions(env.ALLOWED_ORIGINS, env.NODE_ENV));
+
+  // Health & Readiness checks
   server.get('/health', async () => ({ status: 'ok', service: 'notification-service' }));
+  server.get('/ready', async (_req, reply) => {
+    try {
+      await pgPool.query('SELECT 1');
+      return { status: 'ready', database: 'connected', service: 'notification-service' };
+    } catch (err: any) {
+      return reply.status(503).send({ status: 'not_ready', database: 'disconnected', service: 'notification-service' });
+    }
+  });
 
   // Dispatch a notification (WhatsApp or SMS)
   server.post('/api/notify/dispatch', async (req, reply) => {
