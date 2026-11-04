@@ -9,6 +9,7 @@ interface AuthContextType {
   token: string | null;
   loading: boolean;
   login: (token: string, user: UserProfile) => void;
+  updateUser: (user: UserProfile) => void;
   logout: () => void;
   signOut: () => Promise<void>;
   setMockSession: (user: any, profile: any) => void;
@@ -21,6 +22,7 @@ const AuthContext = createContext<AuthContextType>({
   token: null,
   loading: true,
   login: () => {},
+  updateUser: () => {},
   logout: () => {},
   signOut: async () => {},
   setMockSession: () => {},
@@ -60,6 +62,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setUser(newUser);
   };
 
+  const updateUser = (updatedUser: UserProfile) => {
+    setUser(updatedUser);
+  };
+
   const logout = () => {
     localStorage.removeItem('caterconnect_token');
     setToken(null);
@@ -89,6 +95,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         token,
         loading,
         login,
+        updateUser,
         logout,
         signOut,
         setMockSession,

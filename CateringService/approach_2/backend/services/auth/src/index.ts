@@ -13,7 +13,8 @@ import {
   loggerRedactionConfig,
 } from '@caterconnect/shared';
 import { pgPool } from './db';
-import { findUserByEmail, findUserById, createUser, createGoogleUser, linkGoogleIdToUser } from './users';
+import { findUserByEmail, findUserById, createUser, createGoogleUser, linkGoogleIdToUser, updateUserPhone } from './users';
+import { z } from 'zod';
 import { verifyGoogleIdToken } from './google';
 
 export function buildAuthServer() {
@@ -220,6 +221,37 @@ export function buildAuthServer() {
         return reply.status(404).send({ error: 'User not found' });
       }
       return reply.send({ user });
+    } catch {
+      return reply.status(401).send({ error: 'Unauthorized token' });
+    }
+  });
+
+  // Update Customer Phone Number (Required for booking & notifications)
+  server.post('/api/auth/update-phone', async (req, reply) => {
+    try {
+      await req.jwtVerify();
+      const payload = req.user as { sub: string; role: string };
+      
+      const phoneSchema = z.object({
+        phone: z.string().regex(/^\+91[6-9]\d{9}$/, 'Must be a valid Indian mobile number (+91 followed by 10 digits)'),
+      });
+
+      const parse = phoneSchema.safeParse(req.body);
+      if (!parse.success) {
+        return reply.status(400).send({
+          error: parse.error.issues[0]?.message || 'Invalid phone format',
+        });
+      }
+
+      const updated = await updateUserPhone(payload.sub, parse.data.phone);
+      if (!updated) {
+        return reply.status(404).send({ error: 'User not found' });
+      }
+
+      return reply.send({
+        success: true,
+        user: updated,
+      });
     } catch {
       return reply.status(401).send({ error: 'Unauthorized token' });
     }

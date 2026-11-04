@@ -26,3 +26,10 @@ export async function googleAuthApi(idToken: string) {
     body: JSON.stringify({ idToken }),
   });
 }
+
+export async function updatePhoneApi(phone: string) {
+  return apiFetch<{ success: boolean; user: any }>('/api/auth/update-phone', {
+    method: 'POST',
+    body: JSON.stringify({ phone }),
+  });
+}

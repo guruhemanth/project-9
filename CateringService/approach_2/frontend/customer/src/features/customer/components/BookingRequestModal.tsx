@@ -1,7 +1,9 @@
 import React, { useState } from 'react';
-import { X, AlertCircle } from 'lucide-react';
+import { X, AlertCircle, Phone, CheckCircle2 } from 'lucide-react';
 import { formatPaiseToINR } from '@/lib/formatters';
 import { createBookingRequest } from '../api';
+import { updatePhoneApi } from '../../auth/api';
+import { useAuth } from '@/lib/auth/AuthContext';
 import type { Caterer, Package, Booking } from '@/types/database';
 
 interface Props {
@@ -19,6 +21,8 @@ export const BookingRequestModal: React.FC<Props> = ({
   onClose,
   onSuccess,
 }) => {
+  const { user, updateUser } = useAuth();
+
   // Tomorrow's date as min
   const tomorrow = new Date();
   tomorrow.setDate(tomorrow.getDate() + 1);
@@ -31,6 +35,10 @@ export const BookingRequestModal: React.FC<Props> = ({
   const [specialRequests, setSpecialRequests] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Phone number state for users without a registered mobile number
+  const [phone, setPhone] = useState(user?.phone || '+91');
+  const [phoneSaved, setPhoneSaved] = useState(Boolean(user?.phone));
 
   const estimatedTotalPaise = guestCount * packageItem.price_per_plate;
 
@@ -51,6 +59,26 @@ export const BookingRequestModal: React.FC<Props> = ({
     if (!venueAddress.trim()) {
       setError('Please provide the venue address.');
       return;
+    }
+
+    // Require customer to provide and verify phone number if missing from account
+    if (!phoneSaved) {
+      const phoneRegex = /^\+91[6-9]\d{9}$/;
+      if (!phoneRegex.test(phone.trim())) {
+        setError('Please enter a valid 10-digit Indian mobile number (+91 followed by 10 digits).');
+        return;
+      }
+
+      try {
+        setSubmitting(true);
+        const updateRes = await updatePhoneApi(phone.trim());
+        updateUser(updateRes.user);
+        setPhoneSaved(true);
+      } catch (phoneErr: any) {
+        setError(phoneErr.message || 'Failed to update phone number.');
+        setSubmitting(false);
+        return;
+      }
     }
 
     setSubmitting(true);
@@ -143,6 +171,36 @@ export const BookingRequestModal: React.FC<Props> = ({
               onChange={(e) => setGuestCount(Number(e.target.value))}
               className="mt-1 w-full rounded-lg border border-slate-300 py-2 px-3 text-xs focus:border-emerald-500 focus:outline-none font-semibold"
             />
+          </div>
+
+          {/* Contact Mobile Phone Number (Verification Field for Order Alerts & SMS) */}
+          <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-3.5">
+            <div className="flex items-center justify-between mb-1.5">
+              <label className="flex items-center gap-1.5 text-xs font-bold text-slate-800">
+                <Phone className="h-3.5 w-3.5 text-emerald-600" />
+                Contact Mobile Number (+91)
+              </label>
+              {phoneSaved && (
+                <span className="flex items-center gap-1 text-[11px] font-semibold text-emerald-700">
+                  <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" />
+                  Verified
+                </span>
+              )}
+            </div>
+            <input
+              type="tel"
+              required
+              placeholder="+919876543210"
+              value={phone}
+              onChange={(e) => {
+                setPhone(e.target.value);
+                setPhoneSaved(e.target.value === user?.phone);
+              }}
+              className="w-full rounded-lg border border-slate-300 bg-white py-2 px-3 text-xs font-medium focus:border-emerald-500 focus:outline-none"
+            />
+            <p className="mt-1 text-[10px] text-slate-500">
+              Required for receiving caterer acceptance updates, payment links, and booking confirmations.
+            </p>
           </div>
 
           <div>

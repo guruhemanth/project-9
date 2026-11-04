@@ -90,3 +90,22 @@ export async function linkGoogleIdToUser(userId: string, googleId: string): Prom
     [googleId, userId]
   );
 }
+
+export async function updateUserPhone(userId: string, phone: string): Promise<UserProfile | null> {
+  const result = await pgPool.query(
+    `UPDATE auth_svc.users
+     SET phone = $1, updated_at = NOW()
+     WHERE id = $2
+     RETURNING id, role, full_name, phone, created_at`,
+    [phone.trim(), userId]
+  );
+  if (!result.rows[0]) return null;
+  const row = result.rows[0];
+  return {
+    id: row.id,
+    role: row.role as UserRole,
+    fullName: row.full_name,
+    phone: row.phone,
+    createdAt: row.created_at,
+  };
+}
