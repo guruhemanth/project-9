@@ -54,6 +54,22 @@ describe('Shared Environment Validator', () => {
     }).toThrow(/Fatal: DATABASE_URL/);
   });
 
+  it('accepts CATER_DATABASE_URL and CATERDBURL over DATABASE_URL', () => {
+    const env1 = validateEnv(createDbEnvSchema(), {
+      NODE_ENV: 'production',
+      CATER_DATABASE_URL: 'postgresql://postgres:CaterPG123@127.0.0.1:54322/caterconnect',
+      DATABASE_URL: 'postgresql://other_user:pass@127.0.0.1:5432/wrong_db',
+    });
+    expect(env1.DATABASE_URL).toBe('postgresql://postgres:CaterPG123@127.0.0.1:54322/caterconnect');
+
+    const env2 = validateEnv(createDbEnvSchema(), {
+      NODE_ENV: 'production',
+      CATERDBURL: 'postgresql://postgres:CaterPG123@127.0.0.1:54322/caterconnect',
+      DATABASE_URL: 'postgresql://other_user:pass@127.0.0.1:5432/wrong_db',
+    });
+    expect(env2.DATABASE_URL).toBe('postgresql://postgres:CaterPG123@127.0.0.1:54322/caterconnect');
+  });
+
   it('fails fast on payment env if Razorpay secrets are missing in production', () => {
     expect(() => {
       validateEnv(createPaymentEnvSchema(), {

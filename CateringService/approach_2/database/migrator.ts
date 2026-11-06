@@ -2,9 +2,16 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import pg from 'pg';
+import dotenv from 'dotenv';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+// Load .env from project root if present to override machine environment
+const envPath = path.resolve(__dirname, '../.env');
+if (fs.existsSync(envPath)) {
+  dotenv.config({ path: envPath, override: true });
+}
 
 interface MigrationDefinition {
   name: string;
@@ -64,6 +71,8 @@ const MIGRATIONS: MigrationDefinition[] = [
 ];
 
 function getConnectionString(): string {
+  if (process.env.CATER_DATABASE_URL) return process.env.CATER_DATABASE_URL;
+  if (process.env.CATERDBURL) return process.env.CATERDBURL;
   if (process.env.APP_DATABASE_URL) return process.env.APP_DATABASE_URL;
   if (process.env.DATABASE_URL && (process.env.DATABASE_URL.includes('54322') || process.env.DATABASE_URL.includes('caterconnect'))) {
     return process.env.DATABASE_URL;

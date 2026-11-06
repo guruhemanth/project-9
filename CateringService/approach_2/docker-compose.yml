@@ -6,9 +6,11 @@ services:
     container_name: caterconnect-postgres
     restart: always
     environment:
-      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER is required}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-CaterPG123}
       POSTGRES_DB: ${POSTGRES_DB:-caterconnect}
+    ports:
+      - "54322:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
       - ./database/01_init_schemas.sql:/docker-entrypoint-initdb.d/01_init_schemas.sql

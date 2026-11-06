@@ -4,6 +4,14 @@ set -e
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$DIR"
 
+# Automatically load environment variables from .env if present (overriding inherited shell env)
+if [ -f "$DIR/.env" ]; then
+  echo "Loading environment variables from $DIR/.env..."
+  set -a
+  source "$DIR/.env"
+  set +a
+fi
+
 echo "=== Starting CaterConnect Ecosystem ==="
 
 # Cleanly free all ports if held
@@ -17,8 +25,8 @@ if [ -z "$JWT_SECRET" ]; then
   exit 1
 fi
 
-if [ -z "$DATABASE_URL" ] && [ -z "$APP_DATABASE_URL" ]; then
-  echo "Error: DATABASE_URL environment variable is required."
+if [ -z "$CATER_DATABASE_URL" ] && [ -z "$CATERDBURL" ] && [ -z "$APP_DATABASE_URL" ] && [ -z "$DATABASE_URL" ]; then
+  echo "Error: CATER_DATABASE_URL (or DATABASE_URL) environment variable is required."
   exit 1
 fi
 

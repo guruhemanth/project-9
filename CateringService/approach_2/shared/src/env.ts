@@ -81,31 +81,33 @@ export interface NotificationEnv extends DbEnv {
 
 /**
  * Database environment schema.
- * Rejects startup in non-test environments if DATABASE_URL (or APP_DATABASE_URL) is absent.
+ * Rejects startup in non-test environments if CATER_DATABASE_URL / CATERDBURL / APP_DATABASE_URL / DATABASE_URL is absent.
  */
 export function createDbEnvSchema(): z.ZodType<DbEnv, z.ZodTypeDef, unknown> {
   return z.object({
     NODE_ENV: appEnvSchema,
     PORT: z.coerce.number().optional(),
     ALLOWED_ORIGINS: z.string().optional(),
+    CATER_DATABASE_URL: z.string().optional(),
+    CATERDBURL: z.string().optional(),
     APP_DATABASE_URL: z.string().optional(),
     DATABASE_URL: z.string().optional(),
   }).transform((data): DbEnv => {
     const isTesting = isTestEnv(data.NODE_ENV);
-    const rawUrl = data.APP_DATABASE_URL || data.DATABASE_URL;
+    const rawUrl = data.CATER_DATABASE_URL || data.CATERDBURL || data.APP_DATABASE_URL || data.DATABASE_URL;
 
     if (isTesting && (!rawUrl || (!rawUrl.includes('caterconnect') && !rawUrl.includes('54322')))) {
       return {
         NODE_ENV: data.NODE_ENV,
         PORT: data.PORT,
         ALLOWED_ORIGINS: data.ALLOWED_ORIGINS,
-        DATABASE_URL: 'postgresql://postgres:postgres@127.0.0.1:54322/postgres',
+        DATABASE_URL: 'postgresql://postgres:CaterPG123@127.0.0.1:54322/caterconnect',
       };
     }
 
     if (!rawUrl) {
       throw new Error(
-        '[Environment Validation] Fatal: DATABASE_URL (or APP_DATABASE_URL) is required in non-test environments. Refusing to start.'
+        '[Environment Validation] Fatal: DATABASE_URL (or CATER_DATABASE_URL / CATERDBURL) is required in non-test environments. Refusing to start.'
       );
     }
 
@@ -180,17 +182,19 @@ export function createAuthEnvSchema(): z.ZodType<AuthEnv, z.ZodTypeDef, unknown>
     NODE_ENV: appEnvSchema,
     PORT: z.coerce.number().default(4001),
     ALLOWED_ORIGINS: z.string().optional(),
+    CATER_DATABASE_URL: z.string().optional(),
+    CATERDBURL: z.string().optional(),
     APP_DATABASE_URL: z.string().optional(),
     DATABASE_URL: z.string().optional(),
     JWT_SECRET: z.string().optional(),
     GOOGLE_CLIENT_ID: z.string().optional(),
   }).transform((data): AuthEnv => {
     const isTesting = isTestEnv(data.NODE_ENV);
-    const rawUrl = data.APP_DATABASE_URL || data.DATABASE_URL;
+    const rawUrl = data.CATER_DATABASE_URL || data.CATERDBURL || data.APP_DATABASE_URL || data.DATABASE_URL;
     let dbUrl = rawUrl;
 
     if (isTesting && (!dbUrl || (!dbUrl.includes('caterconnect') && !dbUrl.includes('54322')))) {
-      dbUrl = 'postgresql://postgres:postgres@127.0.0.1:54322/postgres';
+      dbUrl = 'postgresql://postgres:CaterPG123@127.0.0.1:54322/caterconnect';
     } else if (!dbUrl) {
       throw new Error(
         '[Environment Validation] Fatal: DATABASE_URL is required in non-test environments.'
@@ -232,6 +236,8 @@ export function createPaymentEnvSchema(): z.ZodType<PaymentEnv, z.ZodTypeDef, un
     NODE_ENV: appEnvSchema,
     PORT: z.coerce.number().default(4004),
     ALLOWED_ORIGINS: z.string().optional(),
+    CATER_DATABASE_URL: z.string().optional(),
+    CATERDBURL: z.string().optional(),
     APP_DATABASE_URL: z.string().optional(),
     DATABASE_URL: z.string().optional(),
     RAZORPAY_KEY_ID: z.string().optional(),
@@ -239,11 +245,11 @@ export function createPaymentEnvSchema(): z.ZodType<PaymentEnv, z.ZodTypeDef, un
     RAZORPAY_WEBHOOK_SECRET: z.string().optional(),
   }).transform((data): PaymentEnv => {
     const isTesting = isTestEnv(data.NODE_ENV);
-    const rawUrl = data.APP_DATABASE_URL || data.DATABASE_URL;
+    const rawUrl = data.CATER_DATABASE_URL || data.CATERDBURL || data.APP_DATABASE_URL || data.DATABASE_URL;
     let dbUrl = rawUrl;
 
     if (isTesting && (!dbUrl || (!dbUrl.includes('caterconnect') && !dbUrl.includes('54322')))) {
-      dbUrl = 'postgresql://postgres:postgres@127.0.0.1:54322/postgres';
+      dbUrl = 'postgresql://postgres:CaterPG123@127.0.0.1:54322/caterconnect';
     } else if (!dbUrl) {
       throw new Error(
         '[Environment Validation] Fatal: DATABASE_URL is required in non-test environments.'
@@ -287,6 +293,8 @@ export function createNotificationEnvSchema(): z.ZodType<NotificationEnv, z.ZodT
     NODE_ENV: appEnvSchema,
     PORT: z.coerce.number().default(4005),
     ALLOWED_ORIGINS: z.string().optional(),
+    CATER_DATABASE_URL: z.string().optional(),
+    CATERDBURL: z.string().optional(),
     APP_DATABASE_URL: z.string().optional(),
     DATABASE_URL: z.string().optional(),
     NOTIFY_MODE: z.enum(['log', 'live']).default('log'),
@@ -297,11 +305,11 @@ export function createNotificationEnvSchema(): z.ZodType<NotificationEnv, z.ZodT
     SMS_API_KEY: z.string().optional(),
   }).transform((data): NotificationEnv => {
     const isTesting = isTestEnv(data.NODE_ENV);
-    const rawUrl = data.APP_DATABASE_URL || data.DATABASE_URL;
+    const rawUrl = data.CATER_DATABASE_URL || data.CATERDBURL || data.APP_DATABASE_URL || data.DATABASE_URL;
     let dbUrl = rawUrl;
 
     if (isTesting && (!dbUrl || (!dbUrl.includes('caterconnect') && !dbUrl.includes('54322')))) {
-      dbUrl = 'postgresql://postgres:postgres@127.0.0.1:54322/postgres';
+      dbUrl = 'postgresql://postgres:CaterPG123@127.0.0.1:54322/caterconnect';
     } else if (!dbUrl) {
       throw new Error(
         '[Environment Validation] Fatal: DATABASE_URL is required in non-test environments.'

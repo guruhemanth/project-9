@@ -115,7 +115,7 @@ export function buildChatServer() {
         return reply.status(403).send({ error: 'Forbidden: You are not a participant in this booking' });
       }
 
-      // 3. Find or create thread
+      // 3. Find or create thread (upsert-safe with ON CONFLICT)
       let threadRes = await pgPool.query(
         'SELECT * FROM chat_svc.chat_threads WHERE booking_id = $1 LIMIT 1',
         [bookingId]
@@ -125,6 +125,7 @@ export function buildChatServer() {
         threadRes = await pgPool.query(
           `INSERT INTO chat_svc.chat_threads (booking_id, customer_id, caterer_id)
            VALUES ($1, $2, $3)
+           ON CONFLICT (booking_id) DO UPDATE SET updated_at = NOW()
            RETURNING *`,
           [bookingId, booking.customer_id, booking.caterer_id]
         );

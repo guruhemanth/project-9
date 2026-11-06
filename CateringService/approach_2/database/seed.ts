@@ -2,9 +2,16 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import pg from 'pg';
+import dotenv from 'dotenv';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+// Load .env from project root if present to override machine environment
+const envPath = path.resolve(__dirname, '../.env');
+if (fs.existsSync(envPath)) {
+  dotenv.config({ path: envPath, override: true });
+}
 
 async function runSeed() {
   const nodeEnv = process.env.NODE_ENV || 'development';
@@ -16,6 +23,8 @@ async function runSeed() {
   }
 
   const connectionString =
+    process.env.CATER_DATABASE_URL ||
+    process.env.CATERDBURL ||
     process.env.APP_DATABASE_URL ||
     (process.env.DATABASE_URL && (process.env.DATABASE_URL.includes('54322') || process.env.DATABASE_URL.includes('caterconnect'))
       ? process.env.DATABASE_URL
