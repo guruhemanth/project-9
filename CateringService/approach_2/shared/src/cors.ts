@@ -22,6 +22,11 @@ export function buildCorsOptions(allowedOriginsStr?: string, nodeEnv = 'developm
         return cb(null, true);
       }
 
+      // In development mode, dynamically permit ngrok and localhost tunnels
+      if (isDev && (origin.endsWith('.ngrok-free.dev') || origin.endsWith('.ngrok.io') || origin.includes('localhost') || origin.includes('127.0.0.1'))) {
+        return cb(null, true);
+      }
+
       // Reject unauthorized origins with a descriptive error
       return cb(new Error(`Origin '${origin}' is not allowed by CaterConnect CORS policy.`), false);
     },
