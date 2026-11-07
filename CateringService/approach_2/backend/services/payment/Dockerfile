@@ -14,4 +14,4 @@ RUN pnpm --filter @caterconnect/payment-service run build
 
 EXPOSE 4004
 ENV NODE_ENV=production
-CMD ["node", "backend/services/payment/dist/index.js"]
+CMD ["./node_modules/.bin/tsx", "backend/services/payment/src/index.ts"]
