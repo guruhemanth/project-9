@@ -14,4 +14,4 @@ RUN pnpm --filter @caterconnect/notification-service run build
 
 EXPOSE 4005
 ENV NODE_ENV=production
-CMD ["node", "backend/services/notification/dist/index.js"]
+CMD ["./node_modules/.bin/tsx", "backend/services/notification/src/index.ts"]

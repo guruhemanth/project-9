@@ -37,6 +37,9 @@ export interface Caterer {
   business_name: string;
   description: string | null;
   city: string;
+  state?: string;
+  pincode?: string | null;
+  address?: string | null;
   service_areas: string[];
   cuisines: string[];
   fssai_number: string;

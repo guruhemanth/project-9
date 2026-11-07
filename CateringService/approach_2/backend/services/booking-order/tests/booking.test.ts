@@ -12,7 +12,9 @@ describe('Booking & Order Service Integration', () => {
 
   afterAll(async () => {
     await app.close();
-    await pgPool.end();
+    if (!(pgPool as any).ending) {
+      await pgPool.end();
+    }
   });
 
   it('responds with 200 on /health', async () => {
@@ -55,6 +57,7 @@ describe('Booking & Order Service Integration', () => {
       url: `/api/bookings/${createdBookingId}/accept`,
       headers: {
         'x-user-id': 'c0000000-0000-0000-0000-000000000002',
+        'x-user-role': 'caterer',
       },
       payload: {
         catererNote: 'We would be honored to cater your event.',
@@ -75,6 +78,7 @@ describe('Booking & Order Service Integration', () => {
       url: `/api/bookings/${createdBookingId}/complete`,
       headers: {
         'x-user-id': 'c0000000-0000-0000-0000-000000000002',
+        'x-user-role': 'caterer',
       },
     });
 
@@ -135,10 +139,16 @@ describe('Booking & Order Service Integration', () => {
   });
 
   it('allows admin to query all platform bookings and cancel with dispute resolution', async () => {
+    const adminHeaders = {
+      'x-user-id': 'c0000000-0000-0000-0000-000000000003',
+      'x-user-role': 'admin',
+    };
+
     // 1. Query all bookings
     const listRes = await app.inject({
       method: 'GET',
       url: '/api/admin/bookings',
+      headers: adminHeaders,
     });
     expect(listRes.statusCode).toBe(200);
     const bookings = listRes.json().bookings;
@@ -151,7 +161,7 @@ describe('Booking & Order Service Integration', () => {
     const createRes = await app.inject({
       method: 'POST',
       url: '/api/bookings',
-      headers: { 'x-user-id': 'c0000000-0000-0000-0000-000000000001' },
+      headers: { 'x-user-id': 'c0000000-0000-0000-0000-000000000001', 'x-user-role': 'customer' },
       payload: {
         catererId,
         packageId: 'e0000000-0000-0000-0000-000000000001',
@@ -169,6 +179,7 @@ describe('Booking & Order Service Integration', () => {
     const cancelRes = await app.inject({
       method: 'POST',
       url: `/api/admin/bookings/${bookingId}/cancel`,
+      headers: adminHeaders,
       payload: { reason: 'Venue hall closed unexpectedly due to municipal repair' },
     });
     expect(cancelRes.statusCode).toBe(200);

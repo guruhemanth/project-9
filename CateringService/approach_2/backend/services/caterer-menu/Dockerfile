@@ -14,4 +14,4 @@ RUN pnpm --filter @caterconnect/caterer-menu-service run build
 
 EXPOSE 4002
 ENV NODE_ENV=production
-CMD ["node", "backend/services/caterer-menu/dist/index.js"]
+CMD ["./node_modules/.bin/tsx", "backend/services/caterer-menu/src/index.ts"]

@@ -16,8 +16,11 @@ export const loginSchema = z.object({
 export const catererOnboardingSchema = z.object({
   businessName: z.string().min(3, 'Business name must be at least 3 characters'),
   description: z.string().optional(),
-  city: z.string().default('Tirupati'),
-  serviceAreas: z.array(z.string()).min(1, 'Select at least one service area in Tirupati'),
+  state: z.string().min(2, 'State / Union Territory is required').default('Andhra Pradesh'),
+  city: z.string().min(2, 'City is required').default('Tirupati'),
+  pincode: z.string().regex(/^[1-9][0-9]{5}$/, 'Pincode must be a 6-digit Indian PIN code').optional().nullable(),
+  address: z.string().optional().nullable(),
+  serviceAreas: z.array(z.string()).min(1, 'Add at least one service locality or district'),
   cuisines: z.array(z.string()).min(1, 'Select at least one cuisine'),
   fssaiNumber: z.string().regex(/^\d{14}$/, 'FSSAI license must be exactly 14 numeric digits'),
   gstNumber: z.string().regex(/^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1}$/, 'Invalid GST format').optional().nullable(),
@@ -46,6 +49,8 @@ export const bookingRequestSchema = z.object({
   guestCount: z.number().int().positive(),
   venueAddress: z.string().min(5, 'Detailed venue address is required'),
   city: z.string().default('Tirupati'),
+  state: z.string().default('Andhra Pradesh'),
+  pincode: z.string().regex(/^[1-9][0-9]{5}$/, 'Pincode must be a 6-digit Indian PIN code').optional().nullable(),
   specialRequests: z.string().optional().nullable(),
 });
 

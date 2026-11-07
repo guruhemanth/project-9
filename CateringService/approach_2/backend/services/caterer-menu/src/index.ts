@@ -1,27 +1,74 @@
 import Fastify from 'fastify';
 import fastifyCors from '@fastify/cors';
+import fastifyHelmet from '@fastify/helmet';
 import { pgPool } from './db';
-import { catererOnboardingSchema, packageSchema, blackoutDateSchema, CatererStatus } from '@caterconnect/shared';
+import {
+  catererOnboardingSchema,
+  packageSchema,
+  blackoutDateSchema,
+  CatererStatus,
+  validateEnv,
+  createDbEnvSchema,
+  buildCorsOptions,
+  registerCentralizedErrorHandler,
+  loggerRedactionConfig,
+  getAuthenticatedUser,
+} from '@caterconnect/shared';
 
 export function buildCatererServer() {
-  const server = Fastify({ logger: false });
+  const env = validateEnv(createDbEnvSchema(), process.env);
+  const server = Fastify({
+    logger: {
+      redact: loggerRedactionConfig,
+    },
+    bodyLimit: 1048576,
+    connectionTimeout: 10000,
+    requestTimeout: 15000,
+  });
 
-  server.register(fastifyCors, { origin: true });
+  registerCentralizedErrorHandler(server, 'caterer-menu-service');
 
-  // Health check
+  server.addHook('onClose', async () => {
+    if (!(pgPool as any).ending) {
+      await pgPool.end();
+    }
+  });
+
+  server.register(fastifyHelmet, { contentSecurityPolicy: false });
+  server.register(fastifyCors, buildCorsOptions(env.ALLOWED_ORIGINS, env.NODE_ENV));
+
+  // Helper to assert caterer ownership or admin role
+  async function assertCatererOwner(catererId: string, actorId: string, actorRole: string): Promise<boolean> {
+    if (actorRole === 'admin') return true;
+    const res = await pgPool.query('SELECT owner_id FROM caterer_svc.caterers WHERE id = $1', [catererId]);
+    if (res.rows.length === 0) return false;
+    return res.rows[0].owner_id === actorId;
+  }
+
+  // Health & Readiness checks
   server.get('/health', async () => ({ status: 'ok', service: 'caterer-menu-service' }));
+  server.get('/ready', async (_req, reply) => {
+    try {
+      await pgPool.query('SELECT 1');
+      return { status: 'ready', database: 'connected', service: 'caterer-menu-service' };
+    } catch (err: any) {
+      return reply.status(503).send({ status: 'not_ready', database: 'disconnected', service: 'caterer-menu-service' });
+    }
+  });
 
-  // List approved caterers with optional filters (cuisine, min/max budget)
+  // List approved caterers with optional filters (cuisine, min/max budget, city, state, search)
   server.get('/api/caterers', async (req, reply) => {
     const query = req.query as {
       cuisine?: string;
       maxPrice?: string;
       city?: string;
+      state?: string;
+      search?: string;
     };
 
     let sql = `
       SELECT 
-        c.id, c.business_name, c.description, c.city, c.service_areas,
+        c.id, c.business_name, c.description, c.city, c.state, c.pincode, c.address, c.service_areas,
         c.cuisines, c.fssai_number, c.gst_number, c.status, c.avg_rating,
         c.review_count, c.created_at,
         COALESCE(
@@ -43,14 +90,30 @@ export function buildCatererServer() {
 
     const params: any[] = [];
 
-    if (query.cuisine) {
+    if (query.cuisine && query.cuisine !== 'all') {
       params.push(query.cuisine);
       sql += ` AND $${params.length} = ANY(c.cuisines)`;
     }
 
-    if (query.city) {
-      params.push(query.city);
-      sql += ` AND LOWER(c.city) = LOWER($${params.length})`;
+    if (query.city && query.city.toLowerCase() !== 'all' && query.city.toLowerCase() !== 'all india') {
+      params.push(query.city.trim());
+      sql += ` AND (
+        LOWER(c.city) = LOWER($${params.length})
+        OR LOWER(c.state) = LOWER($${params.length})
+        OR EXISTS (
+          SELECT 1 FROM unnest(c.service_areas) area
+          WHERE LOWER(area) LIKE '%' || LOWER($${params.length}) || '%'
+        )
+      )`;
+    }
+
+    if (query.search && query.search.trim()) {
+      params.push(`%${query.search.trim().toLowerCase()}%`);
+      sql += ` AND (
+        LOWER(c.business_name) LIKE $${params.length}
+        OR LOWER(COALESCE(c.description, '')) LIKE $${params.length}
+        OR LOWER(c.city) LIKE $${params.length}
+      )`;
     }
 
     sql += ` GROUP BY c.id ORDER BY c.avg_rating DESC, c.created_at DESC`;
@@ -62,6 +125,9 @@ export function buildCatererServer() {
       businessName: row.business_name,
       description: row.description,
       city: row.city,
+      state: row.state,
+      pincode: row.pincode,
+      address: row.address,
       serviceAreas: row.service_areas,
       cuisines: row.cuisines,
       fssaiNumber: row.fssai_number,
@@ -76,73 +142,99 @@ export function buildCatererServer() {
     return reply.send({ caterers });
   });
 
-  // Get caterer details by ID (including packages and items)
-  server.get('/api/caterers/:id', async (req, reply) => {
+  // Get distinct active operating cities
+  server.get('/api/caterers/cities', async (req, reply) => {
     try {
-      const { id } = req.params as { id: string };
-
-      const catererRes = await pgPool.query(
-        'SELECT * FROM caterer_svc.caterers WHERE id = $1 LIMIT 1',
-        [id]
-      );
-
-      if (catererRes.rows.length === 0) {
-        return reply.status(404).send({ error: 'Caterer not found' });
-      }
-
-      const c = catererRes.rows[0];
-
-      const packagesRes = await pgPool.query(
-        `SELECT p.id, p.name, p.description, p.price_per_plate_paise, p.min_guests, p.max_guests,
-          COALESCE(
-            json_agg(
-              json_build_object(
-                'id', pi.id,
-                'name', pi.name,
-                'category', pi.category
-              )
-            ) FILTER (WHERE pi.id IS NOT NULL), '[]'
-          ) as items
-         FROM caterer_svc.packages p
-         LEFT JOIN caterer_svc.package_items pi ON p.id = pi.package_id
-         WHERE p.caterer_id = $1
-         GROUP BY p.id, p.name, p.description, p.price_per_plate_paise, p.min_guests, p.max_guests
-         ORDER BY p.price_per_plate_paise ASC`,
-        [id]
-      );
-
-      return reply.send({
-        caterer: {
-          id: c.id,
-          ownerId: c.owner_id,
-          businessName: c.business_name,
-          description: c.description,
-          city: c.city,
-          serviceAreas: c.service_areas,
-          cuisines: c.cuisines,
-          fssaiNumber: c.fssai_number,
-          gstNumber: c.gst_number,
-          status: c.status,
-          avgRating: parseFloat(c.avg_rating || '0'),
-          reviewCount: c.review_count,
-          packages: packagesRes.rows.map((p) => ({
-            id: p.id,
-            name: p.name,
-            description: p.description,
-            pricePerPlatePaise: p.price_per_plate_paise,
-            minGuests: p.min_guests,
-            maxGuests: p.max_guests,
-            items: p.items,
-          })),
-        },
-      });
+      const result = await pgPool.query(`
+        SELECT DISTINCT city, state, count(*)::int as count
+        FROM caterer_svc.caterers
+        WHERE status = 'approved'
+        GROUP BY city, state
+        ORDER BY count DESC, city ASC
+      `);
+      return reply.send({ cities: result.rows });
     } catch (err: any) {
-      console.error('GET /caterers/:id error:', err);
-      return reply.status(500).send({ error: err.message });
+      req.log.error(err);
+      return reply.status(500).send({ error: 'Failed to retrieve active cities' });
     }
   });
 
-  // Caterer Onboarding / Registration
+  // Get single caterer detail by ID with packages and menu items
+  server.get('/api/caterers/:id', async (req, reply) => {
+    const { id } = req.params as { id: string };
+
+    const catererRes = await pgPool.query(
+      'SELECT * FROM caterer_svc.caterers WHERE id = $1 LIMIT 1',
+      [id]
+    );
+
+    if (catererRes.rows.length === 0) {
+      return reply.status(404).send({ error: 'Caterer not found' });
+    }
+
+    const c = catererRes.rows[0];
+
+    // Only allow public viewing if approved, unless viewed by owner or admin
+    if (c.status !== 'approved') {
+      const authUser = getAuthenticatedUser(req);
+      const isOwner = authUser && (authUser.userId === c.owner_id || authUser.role === 'admin');
+      if (!isOwner) {
+        return reply.status(404).send({ error: 'Caterer not found' });
+      }
+    }
+
+    const packagesRes = await pgPool.query(
+      `SELECT p.id, p.name, p.description, p.price_per_plate_paise, p.min_guests, p.max_guests,
+        COALESCE(
+          json_agg(
+            json_build_object(
+              'id', pi.id,
+              'name', pi.name,
+              'category', pi.category
+            )
+          ) FILTER (WHERE pi.id IS NOT NULL), '[]'
+        ) as items
+       FROM caterer_svc.packages p
+       LEFT JOIN caterer_svc.package_items pi ON p.id = pi.package_id
+       WHERE p.caterer_id = $1
+       GROUP BY p.id, p.name, p.description, p.price_per_plate_paise, p.min_guests, p.max_guests
+       ORDER BY p.price_per_plate_paise ASC`,
+      [id]
+    );
+
+    const packages = packagesRes.rows.map((row) => ({
+      id: row.id,
+      name: row.name,
+      description: row.description,
+      pricePerPlatePaise: row.price_per_plate_paise,
+      minGuests: row.min_guests,
+      maxGuests: row.max_guests,
+      items: row.items,
+    }));
+
+    return reply.send({
+      caterer: {
+        id: c.id,
+        businessName: c.business_name,
+        description: c.description,
+        city: c.city,
+        state: c.state,
+        pincode: c.pincode,
+        address: c.address,
+        serviceAreas: c.service_areas,
+        cuisines: c.cuisines,
+        fssaiNumber: c.fssai_number,
+        gstNumber: c.gst_number,
+        status: c.status,
+        avgRating: parseFloat(c.avg_rating || '0'),
+        reviewCount: c.review_count,
+        packages,
+        createdAt: c.created_at,
+      },
+    });
+  });
+
+  // Caterer Onboarding (Create caterer profile, starts as 'pending')
   server.post('/api/caterers/onboard', async (req, reply) => {
     try {
       const parseResult = catererOnboardingSchema.safeParse(req.body);
@@ -153,23 +245,27 @@ export function buildCatererServer() {
         });
       }
 
-      const data = parseResult.data;
-      const ownerId = (req.headers['x-user-id'] as string) || req.body && (req.body as any).ownerId;
-
-      if (!ownerId) {
-        return reply.status(401).send({ error: 'Missing owner identification header or field' });
+      const authUser = getAuthenticatedUser(req);
+      if (!authUser) {
+        return reply.status(401).send({ error: 'Unauthorized: Authentication required' });
       }
+
+      const data = parseResult.data;
+      const ownerId = authUser.userId;
 
       const insertRes = await pgPool.query(
         `INSERT INTO caterer_svc.caterers 
-         (owner_id, business_name, description, city, service_areas, cuisines, fssai_number, gst_number, status)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'pending')
+         (owner_id, business_name, description, city, state, pincode, address, service_areas, cuisines, fssai_number, gst_number, status)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'pending')
          RETURNING *`,
         [
           ownerId,
           data.businessName,
           data.description || '',
           data.city || 'Tirupati',
+          data.state || 'Andhra Pradesh',
+          data.pincode || null,
+          data.address || null,
           data.serviceAreas || [],
           data.cuisines,
           data.fssaiNumber,
@@ -189,23 +285,35 @@ export function buildCatererServer() {
         },
       });
     } catch (err: any) {
-      console.error('POST /caterers/onboard error:', err);
-      return reply.status(500).send({ error: err.message });
+      req.log.error(err);
+      return reply.status(500).send({ error: 'Failed to onboard caterer' });
     }
   });
 
-  // Admin status update (approve, reject, suspend)
+  // Admin status update (approve, reject, suspend) - STRICT ADMIN GUARD
   server.patch('/api/caterers/:id/status', async (req, reply) => {
+    const authUser = getAuthenticatedUser(req);
+    if (!authUser || authUser.role !== 'admin') {
+      return reply.status(403).send({ error: 'Forbidden: Admin access required' });
+    }
+
     const { id } = req.params as { id: string };
-    const { status } = req.body as { status: CatererStatus };
+    const { status, rejectionReason } = (req.body as any) || {};
 
     if (!['pending', 'approved', 'rejected', 'suspended'].includes(status)) {
       return reply.status(400).send({ error: 'Invalid caterer status' });
     }
 
+    if (status === 'rejected' && !rejectionReason) {
+      return reply.status(400).send({ error: 'Rejection reason is required when rejecting a caterer' });
+    }
+
     const updateRes = await pgPool.query(
-      'UPDATE caterer_svc.caterers SET status = $1, updated_at = NOW() WHERE id = $2 RETURNING *',
-      [status, id]
+      `UPDATE caterer_svc.caterers
+       SET status = $1, rejection_reason = $2, updated_at = NOW()
+       WHERE id = $3
+       RETURNING *`,
+      [status, status === 'rejected' ? rejectionReason : null, id]
     );
 
     if (updateRes.rows.length === 0) {
@@ -216,13 +324,61 @@ export function buildCatererServer() {
       caterer: {
         id: updateRes.rows[0].id,
         status: updateRes.rows[0].status,
+        rejectionReason: updateRes.rows[0].rejection_reason,
       },
     });
   });
 
-  // Add menu package for caterer
+  // Admin update caterer settings (e.g. commission_pct) - ADMIN GUARD
+  server.patch('/api/caterers/:id', async (req, reply) => {
+    const authUser = getAuthenticatedUser(req);
+    if (!authUser || authUser.role !== 'admin') {
+      return reply.status(403).send({ error: 'Forbidden: Admin access required' });
+    }
+
+    const { id } = req.params as { id: string };
+    const { commissionPct, commission_pct } = (req.body as any) || {};
+    const rate = commissionPct !== undefined ? commissionPct : commission_pct;
+
+    if (rate === undefined || typeof rate !== 'number' || rate < 0 || rate > 100) {
+      return reply.status(400).send({ error: 'Valid commission rate between 0 and 100 is required' });
+    }
+
+    const updateRes = await pgPool.query(
+      `UPDATE caterer_svc.caterers
+       SET commission_pct = $1, updated_at = NOW()
+       WHERE id = $2
+       RETURNING id, business_name, commission_pct, status`,
+      [rate, id]
+    );
+
+    if (updateRes.rows.length === 0) {
+      return reply.status(404).send({ error: 'Caterer not found' });
+    }
+
+    return reply.send({
+      caterer: {
+        id: updateRes.rows[0].id,
+        businessName: updateRes.rows[0].business_name,
+        commissionPct: parseFloat(updateRes.rows[0].commission_pct),
+        status: updateRes.rows[0].status,
+      },
+    });
+  });
+
+  // Add menu package for caterer - OWNERSHIP GUARD
   server.post('/api/caterers/:id/packages', async (req, reply) => {
     const { id } = req.params as { id: string };
+    const authUser = getAuthenticatedUser(req);
+    if (!authUser) {
+      return reply.status(401).send({ error: 'Unauthorized: Authentication required' });
+    }
+
+    const isOwner = await assertCatererOwner(id, authUser.userId, authUser.role);
+    if (!isOwner) {
+      return reply.status(403).send({ error: 'Forbidden: You do not own this caterer business' });
+    }
+
     const parseResult = packageSchema.safeParse(req.body);
     if (!parseResult.success) {
       return reply.status(400).send({
@@ -243,43 +399,75 @@ export function buildCatererServer() {
     return reply.status(201).send({ package: res.rows[0] });
   });
 
-  // Get caterer availability (unavailable dates)
+  // Get caterer's availability & blackout dates (Caterer & Customer calendar)
   server.get('/api/caterers/:id/availability', async (req, reply) => {
-    const { id } = req.params as { id: string };
-    const query = req.query as { month?: string }; // YYYY-MM
+    try {
+      const { id } = req.params as { id: string };
+      const res = await pgPool.query(
+        `SELECT id, caterer_id, TO_CHAR(unavailable_date, 'YYYY-MM-DD') as unavailable_date, reason, auto_locked, booking_id
+         FROM caterer_svc.caterer_availability
+         WHERE caterer_id = $1
+         ORDER BY unavailable_date ASC`,
+        [id]
+      );
 
-    let sql = `
-      SELECT id, caterer_id, TO_CHAR(unavailable_date, 'YYYY-MM-DD') as unavailable_date, reason, auto_locked, booking_id, created_at
-      FROM caterer_svc.caterer_availability
-      WHERE caterer_id = $1
-    `;
-    const params: any[] = [id];
+      const blackoutDates = res.rows.map((row) => ({
+        id: row.id,
+        catererId: row.caterer_id,
+        unavailableDate: row.unavailable_date,
+        reason: row.reason,
+        autoLocked: row.auto_locked,
+        bookingId: row.booking_id,
+      }));
 
-    if (query.month) {
-      params.push(`${query.month}%`);
-      sql += ` AND TO_CHAR(unavailable_date, 'YYYY-MM') LIKE $2`;
+      return reply.send({ blackoutDates, unavailableDates: blackoutDates });
+    } catch (err: any) {
+      req.log.error(err);
+      return reply.status(500).send({ error: 'Failed to retrieve availability' });
     }
-
-    sql += ` ORDER BY unavailable_date ASC`;
-
-    const res = await pgPool.query(sql, params);
-    const unavailableDates = res.rows.map((row) => ({
-      id: row.id,
-      catererId: row.caterer_id,
-      unavailableDate: row.unavailable_date,
-      reason: row.reason,
-      autoLocked: row.auto_locked,
-      bookingId: row.booking_id,
-      createdAt: row.created_at,
-    }));
-
-    return reply.send({ unavailableDates });
   });
 
-  // Add manual blackout date (Caterer)
+  // Check specific date availability
+  server.get('/api/caterers/:id/check-date', async (req, reply) => {
+    try {
+      const { id } = req.params as { id: string };
+      const { date } = req.query as { date: string };
+
+      if (!date) {
+        return reply.status(400).send({ error: 'date query parameter is required (YYYY-MM-DD)' });
+      }
+
+      const res = await pgPool.query(
+        'SELECT reason, auto_locked FROM caterer_svc.caterer_availability WHERE caterer_id = $1 AND unavailable_date = $2',
+        [id, date]
+      );
+
+      const available = res.rows.length === 0;
+      return reply.send({
+        available,
+        reason: available ? null : res.rows[0].reason,
+        autoLocked: available ? false : res.rows[0].auto_locked,
+      });
+    } catch (err: any) {
+      req.log.error(err);
+      return reply.status(500).send({ error: 'Failed to check date availability' });
+    }
+  });
+
+  // Add manual blackout date (Caterer) - OWNERSHIP GUARD
   server.post('/api/caterers/:id/blackout-dates', async (req, reply) => {
     try {
       const { id } = req.params as { id: string };
+      const authUser = getAuthenticatedUser(req);
+      if (!authUser) {
+        return reply.status(401).send({ error: 'Unauthorized: Authentication required' });
+      }
+
+      const isOwner = await assertCatererOwner(id, authUser.userId, authUser.role);
+      if (!isOwner) {
+        return reply.status(403).send({ error: 'Forbidden: You do not own this caterer business' });
+      }
+
       const parseResult = blackoutDateSchema.safeParse(req.body);
       if (!parseResult.success) {
         return reply.status(400).send({
@@ -310,15 +498,24 @@ export function buildCatererServer() {
         },
       });
     } catch (err: any) {
-      console.error('POST /blackout-dates error:', err);
-      return reply.status(500).send({ error: err.message });
+      req.log.error(err);
+      return reply.status(500).send({ error: 'Failed to set blackout date' });
     }
   });
 
-  // Remove manual blackout date (Caterer)
+  // Remove manual blackout date (Caterer) - OWNERSHIP GUARD
   server.delete('/api/caterers/:id/blackout-dates/:date', async (req, reply) => {
     try {
       const { id, date } = req.params as { id: string; date: string };
+      const authUser = getAuthenticatedUser(req);
+      if (!authUser) {
+        return reply.status(401).send({ error: 'Unauthorized: Authentication required' });
+      }
+
+      const isOwner = await assertCatererOwner(id, authUser.userId, authUser.role);
+      if (!isOwner) {
+        return reply.status(403).send({ error: 'Forbidden: You do not own this caterer business' });
+      }
 
       // Prevent removing auto-locked dates (dates with active bookings)
       const existing = await pgPool.query(
@@ -343,14 +540,19 @@ export function buildCatererServer() {
 
       return reply.send({ success: true, message: `Date ${date} reopened for bookings` });
     } catch (err: any) {
-      console.error('DELETE /blackout-dates error:', err);
-      return reply.status(500).send({ error: err.message });
+      req.log.error(err);
+      return reply.status(500).send({ error: 'Failed to delete blackout date' });
     }
   });
 
-  // Admin: List all caterers across all statuses with owner info
+  // Admin: List all caterers across all statuses with owner info - STRICT ADMIN GUARD
   server.get('/api/admin/caterers', async (req, reply) => {
     try {
+      const authUser = getAuthenticatedUser(req);
+      if (!authUser || authUser.role !== 'admin') {
+        return reply.status(403).send({ error: 'Forbidden: Admin access required' });
+      }
+
       const { status } = req.query as { status?: string };
       let sql = `
         SELECT 
@@ -392,14 +594,19 @@ export function buildCatererServer() {
 
       return reply.send({ caterers });
     } catch (err: any) {
-      console.error('GET /api/admin/caterers error:', err);
-      return reply.status(500).send({ error: err.message });
+      req.log.error(err);
+      return reply.status(500).send({ error: 'Failed to list admin caterers' });
     }
   });
 
-  // Admin: Update caterer status (approve, reject with reason, suspend)
+  // Admin: Update caterer status (approve, reject with reason, suspend) - STRICT ADMIN GUARD
   server.patch('/api/admin/caterers/:id/status', async (req, reply) => {
     try {
+      const authUser = getAuthenticatedUser(req);
+      if (!authUser || authUser.role !== 'admin') {
+        return reply.status(403).send({ error: 'Forbidden: Admin access required' });
+      }
+
       const { id } = req.params as { id: string };
       const { status, rejectionReason } = req.body as {
         status: CatererStatus;
@@ -438,8 +645,8 @@ export function buildCatererServer() {
         },
       });
     } catch (err: any) {
-      console.error('PATCH /api/admin/caterers/:id/status error:', err);
-      return reply.status(500).send({ error: err.message });
+      req.log.error(err);
+      return reply.status(500).send({ error: 'Failed to update caterer status' });
     }
   });
 

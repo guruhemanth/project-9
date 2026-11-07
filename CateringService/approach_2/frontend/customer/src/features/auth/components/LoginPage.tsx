@@ -3,6 +3,7 @@ import { useNavigate, useLocation, Link } from 'react-router-dom';
 import { loginApi } from '../api';
 import { useAuth } from '@/lib/auth/AuthContext';
 import { Lock, Mail, AlertCircle } from 'lucide-react';
+import { GoogleSignInButton } from './GoogleSignInButton';
 
 export const LoginPage: React.FC = () => {
   const [email, setEmail] = useState('');
@@ -89,6 +90,14 @@ export const LoginPage: React.FC = () => {
             {submitting ? 'Signing in...' : 'Sign In'}
           </button>
         </form>
+
+        <div className="my-5 flex items-center gap-3">
+          <div className="h-px flex-1 bg-slate-200" />
+          <span className="text-xs font-medium uppercase tracking-wider text-slate-600">OR</span>
+          <div className="h-px flex-1 bg-slate-200" />
+        </div>
+
+        <GoogleSignInButton onError={(msg) => setError(msg)} />
 
         <p className="mt-6 text-center text-xs text-slate-600">
           Don't have an account?{' '}

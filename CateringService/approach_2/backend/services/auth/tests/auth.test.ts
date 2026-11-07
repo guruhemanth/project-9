@@ -11,7 +11,9 @@ describe('Auth Service Fastify Integration', () => {
 
   afterAll(async () => {
     await app.close();
-    await pgPool.end();
+    if (!(pgPool as any).ending) {
+      await pgPool.end();
+    }
   });
 
   it('responds with 200 on /health', async () => {

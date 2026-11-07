@@ -1,18 +1,59 @@
 import Fastify from 'fastify';
 import fastifyCors from '@fastify/cors';
+import fastifyHelmet from '@fastify/helmet';
 import crypto from 'crypto';
 import Razorpay from 'razorpay';
 import { pgPool } from './db';
-import { createOrderSchema, disburseSettlementSchema, PaymentOption } from '@caterconnect/shared';
+import {
+  createOrderSchema,
+  disburseSettlementSchema,
+  PaymentOption,
+  validateEnv,
+  createPaymentEnvSchema,
+  buildCorsOptions,
+  registerCentralizedErrorHandler,
+  loggerRedactionConfig,
+  getAuthenticatedUser,
+} from '@caterconnect/shared';
+import { enqueueOutboxNotification } from './outbox';
 
 export function buildPaymentServer() {
-  const server = Fastify({ logger: false });
+  const env = validateEnv(createPaymentEnvSchema(), process.env);
+  const server = Fastify({
+    logger: {
+      redact: loggerRedactionConfig,
+    },
+    bodyLimit: 1048576,
+    connectionTimeout: 10000,
+    requestTimeout: 15000,
+  });
 
-  server.register(fastifyCors, { origin: true });
+  registerCentralizedErrorHandler(server, 'payment-service');
 
-  const razorpayKeyId = process.env.RAZORPAY_KEY_ID || 'rzp_test_placeholder_key';
-  const razorpayKeySecret = process.env.RAZORPAY_KEY_SECRET || 'rzp_test_placeholder_secret';
-  const webhookSecret = process.env.RAZORPAY_WEBHOOK_SECRET || 'caterconnect_test_webhook_secret_key';
+  server.addHook('onClose', async () => {
+    if (!(pgPool as any).ending) {
+      await pgPool.end();
+    }
+  });
+
+  server.register(fastifyHelmet, { contentSecurityPolicy: false });
+  server.register(fastifyCors, buildCorsOptions(env.ALLOWED_ORIGINS, env.NODE_ENV));
+
+  // Register raw body parser to preserve exact byte-for-byte payload for HMAC verification
+  server.addContentTypeParser('application/json', { parseAs: 'buffer' }, (req, body: Buffer, done) => {
+    try {
+      const raw = body.toString('utf8');
+      (req as any).rawBody = raw;
+      const parsed = JSON.parse(raw);
+      done(null, parsed);
+    } catch (err: any) {
+      done(err, undefined);
+    }
+  });
+
+  const razorpayKeyId = env.RAZORPAY_KEY_ID;
+  const razorpayKeySecret = env.RAZORPAY_KEY_SECRET;
+  const webhookSecret = env.RAZORPAY_WEBHOOK_SECRET;
 
   let razorpayInstance: Razorpay | null = null;
   try {
@@ -24,12 +65,25 @@ export function buildPaymentServer() {
     console.warn('Razorpay client initialization warning:', err);
   }
 
-  // Health check
+  // Health & Readiness checks
   server.get('/health', async () => ({ status: 'ok', service: 'payment-service' }));
+  server.get('/ready', async (_req, reply) => {
+    try {
+      await pgPool.query('SELECT 1');
+      return { status: 'ready', database: 'connected', service: 'payment-service' };
+    } catch (err: any) {
+      return reply.status(503).send({ status: 'not_ready', database: 'disconnected', service: 'payment-service' });
+    }
+  });
 
-  // Create Razorpay Order with Dual Options: Option 1 (100% Full) or Option 2 (25% Advance)
+  // Create Razorpay Order - OWNERSHIP GUARD (Must be the booking customer)
   server.post('/api/payments/create-order', async (req, reply) => {
     try {
+      const authUser = getAuthenticatedUser(req);
+      if (!authUser) {
+        return reply.status(401).send({ error: 'Unauthorized: Authentication required' });
+      }
+
       const parseResult = createOrderSchema.safeParse(req.body);
       if (!parseResult.success) {
         return reply.status(400).send({
@@ -40,9 +94,9 @@ export function buildPaymentServer() {
 
       const { bookingId, paymentOption, advancePct } = parseResult.data;
 
-      // Query booking details
+      // Query booking details and ownership
       const bRes = await pgPool.query(
-        'SELECT id, status, total_amount_paise FROM order_svc.bookings WHERE id = $1',
+        'SELECT id, customer_id, status, total_amount_paise FROM order_svc.bookings WHERE id = $1',
         [bookingId]
       );
 
@@ -51,6 +105,12 @@ export function buildPaymentServer() {
       }
 
       const booking = bRes.rows[0];
+
+      // Ensure caller is the customer who placed this booking
+      if (authUser.role !== 'admin' && booking.customer_id !== authUser.userId) {
+        return reply.status(403).send({ error: 'Forbidden: You do not own this booking' });
+      }
+
       if (booking.status !== 'accepted') {
         return reply.status(400).send({
           error: `Cannot initiate payment for booking in '${booking.status}' status. Must be 'accepted'.`,
@@ -69,21 +129,58 @@ export function buildPaymentServer() {
         orderAmountPaise = totalPaise;
       }
 
-      // Generate order ID via Razorpay or deterministic mock for test
-      let rzpOrderId = `order_${Date.now()}_${Math.random().toString(36).substring(7)}`;
+      // Generate order ID via Razorpay (production must create live order or fail fast)
+      let rzpOrderId = '';
 
-      if (process.env.NODE_ENV !== 'test' && razorpayInstance && !razorpayKeyId.includes('placeholder')) {
-        const rzpOrder = await razorpayInstance.orders.create({
-          amount: orderAmountPaise,
-          currency: 'INR',
-          receipt: bookingId.substring(0, 40),
-          notes: {
-            bookingId,
-            paymentOption,
-            advancePct: pct.toString(),
-          },
-        });
-        rzpOrderId = rzpOrder.id;
+      if (env.NODE_ENV === 'production') {
+        if (!razorpayInstance) {
+          return reply.status(502).send({
+            statusCode: 502,
+            error: 'Bad Gateway',
+            message: 'Razorpay payment client initialization failed.',
+          });
+        }
+        try {
+          const rzpOrder = await razorpayInstance.orders.create({
+            amount: orderAmountPaise,
+            currency: 'INR',
+            receipt: bookingId.substring(0, 40),
+            notes: {
+              bookingId,
+              paymentOption,
+              advancePct: pct.toString(),
+            },
+          });
+          rzpOrderId = rzpOrder.id;
+        } catch (gatewayErr: any) {
+          req.log.error({ gatewayErr }, 'Razorpay live order creation failed');
+          return reply.status(502).send({
+            statusCode: 502,
+            error: 'Bad Gateway',
+            message: 'Failed to create payment order with payment gateway.',
+          });
+        }
+      } else {
+        // Development or test environment mock fallback
+        if (razorpayInstance && !razorpayKeyId.startsWith('test_rzp')) {
+          try {
+            const rzpOrder = await razorpayInstance.orders.create({
+              amount: orderAmountPaise,
+              currency: 'INR',
+              receipt: bookingId.substring(0, 40),
+              notes: {
+                bookingId,
+                paymentOption,
+                advancePct: pct.toString(),
+              },
+            });
+            rzpOrderId = rzpOrder.id;
+          } catch {
+            rzpOrderId = `order_${Date.now()}_${Math.random().toString(36).substring(7)}`;
+          }
+        } else {
+          rzpOrderId = `order_${Date.now()}_${Math.random().toString(36).substring(7)}`;
+        }
       }
 
       // Record created payment in pay_svc.payments
@@ -113,25 +210,34 @@ export function buildPaymentServer() {
         payment: payRes.rows[0],
       });
     } catch (err: any) {
-      console.error('POST /create-order error:', err);
-      return reply.status(500).send({ error: err.message });
+      req.log.error(err);
+      return reply.status(500).send({ error: 'Failed to initiate payment order' });
     }
   });
 
   // Razorpay Webhook Handler
-  // Verifies HMAC SHA-256 signature and updates booking to 'paid'
+  // Verifies HMAC SHA-256 signature over raw request body using timing-safe comparison,
+  // validates exact amount, and idempotently locks rows to prevent replay and race conditions
   server.post('/api/payments/webhook', async (req, reply) => {
     try {
       const signature = req.headers['x-razorpay-signature'] as string;
-      const rawBody = typeof req.body === 'string' ? req.body : JSON.stringify(req.body);
+      if (!signature) {
+        return reply.status(400).send({ error: 'Missing x-razorpay-signature header' });
+      }
 
-      // Verify HMAC-SHA256 signature
+      // Exact raw request body as received over the wire
+      const rawBody = (req as any).rawBody || (typeof req.body === 'string' ? req.body : JSON.stringify(req.body));
+
+      // Verify HMAC-SHA256 signature with timingSafeEqual to prevent timing attacks
       const expectedSignature = crypto
         .createHmac('sha256', webhookSecret)
         .update(rawBody)
         .digest('hex');
 
-      if (signature !== expectedSignature) {
+      const sigBuf = Buffer.from(signature, 'utf8');
+      const expectedBuf = Buffer.from(expectedSignature, 'utf8');
+
+      if (sigBuf.length !== expectedBuf.length || !crypto.timingSafeEqual(sigBuf, expectedBuf)) {
         return reply.status(400).send({ error: 'Invalid Razorpay webhook signature' });
       }
 
@@ -144,74 +250,142 @@ export function buildPaymentServer() {
         const amountPaise = paymentEntity?.amount;
 
         if (orderId) {
-          // Find payment record
-          const pRes = await pgPool.query(
-            'SELECT * FROM pay_svc.payments WHERE razorpay_order_id = $1 LIMIT 1',
-            [orderId]
-          );
+          const client = await pgPool.connect();
+          try {
+            await client.query('BEGIN');
 
-          if (pRes.rows.length > 0) {
+            // 1. Row-level lock on payment record to prevent race conditions
+            const pRes = await client.query(
+              'SELECT * FROM pay_svc.payments WHERE razorpay_order_id = $1 FOR UPDATE',
+              [orderId]
+            );
+
+            if (pRes.rows.length === 0) {
+              await client.query('ROLLBACK');
+              return reply.status(404).send({ error: 'Payment order record not found' });
+            }
+
             const payRow = pRes.rows[0];
+
+            // 2. Amount verification: webhook amount must match expected order amount
+            if (typeof amountPaise === 'number' && payRow.amount_paise !== amountPaise) {
+              req.log.warn({ expected: payRow.amount_paise, received: amountPaise }, 'Payment webhook amount mismatch');
+              await client.query('ROLLBACK');
+              return reply.status(400).send({ error: `Payment amount mismatch: expected ${payRow.amount_paise}, received ${amountPaise}` });
+            }
+
+            // 3. Idempotency: If this payment was already captured, acknowledge immediately without duplicate processing
+            if (payRow.status === 'captured') {
+              await client.query('COMMIT');
+              return reply.send({ received: true, idempotent: true });
+            }
+
             const bookingId = payRow.booking_id;
 
             // Update payment record to captured
-            await pgPool.query(
+            await client.query(
               `UPDATE pay_svc.payments 
                SET status = 'captured', razorpay_payment_id = $1, raw_payload = $2, updated_at = NOW()
                WHERE id = $3`,
               [paymentId || `pay_${Date.now()}`, event, payRow.id]
             );
 
-            // Fetch booking to calculate balance
-            const bRes = await pgPool.query(
-              'SELECT total_amount_paise FROM order_svc.bookings WHERE id = $1',
+            // Fetch booking with row lock
+            const bRes = await client.query(
+              'SELECT status, total_amount_paise FROM order_svc.bookings WHERE id = $1 FOR UPDATE',
               [bookingId]
             );
 
             if (bRes.rows.length > 0) {
-              const totalAmount = bRes.rows[0].total_amount_paise || 0;
-              const balanceDue = Math.max(0, totalAmount - amountPaise);
+              const booking = bRes.rows[0];
 
-              // Update booking to 'paid'
-              await pgPool.query(
-                `UPDATE order_svc.bookings 
-                 SET status = 'paid', 
-                     amount_paid_paise = $1, 
-                     balance_due_paise = $2, 
-                     updated_at = NOW()
-                 WHERE id = $3`,
-                [amountPaise, balanceDue, bookingId]
-              );
+              // CRITICAL: A replayed/duplicate webhook must NEVER move a completed or cancelled booking back to 'paid'
+              if (booking.status !== 'completed' && booking.status !== 'cancelled') {
+                const totalAmount = booking.total_amount_paise || 0;
+                const balanceDue = Math.max(0, totalAmount - (amountPaise || payRow.amount_paise));
 
-              // Record in booking audit history
-              await pgPool.query(
-                `INSERT INTO order_svc.booking_status_history (booking_id, from_status, to_status, note)
-                 VALUES ($1, 'accepted', 'paid', $2)`,
-                [bookingId, `Payment captured via Razorpay ID: ${paymentId}`]
-              );
+                // Update booking to 'paid'
+                await client.query(
+                  `UPDATE order_svc.bookings 
+                   SET status = 'paid', 
+                       amount_paid_paise = $1, 
+                       balance_due_paise = $2, 
+                       updated_at = NOW()
+                   WHERE id = $3`,
+                  [amountPaise || payRow.amount_paise, balanceDue, bookingId]
+                );
+
+                // Record in booking audit history
+                await client.query(
+                  `INSERT INTO order_svc.booking_status_history (booking_id, from_status, to_status, note)
+                   VALUES ($1, $2, 'paid', $3)`,
+                  [bookingId, booking.status, `Payment captured via Razorpay ID: ${paymentId}`]
+                );
+
+                // Enqueue Outbox notification: booking_paid / payment_captured -> both parties
+                const bDetails = await client.query(
+                  `SELECT b.customer_id, b.event_date, c.owner_id as caterer_owner_id, c.business_name
+                   FROM order_svc.bookings b
+                   JOIN caterer_svc.caterers c ON b.caterer_id = c.id
+                   WHERE b.id = $1`,
+                  [bookingId]
+                );
+                if (bDetails.rows.length > 0) {
+                  const bd = bDetails.rows[0];
+                  await enqueueOutboxNotification(
+                    'booking_paid',
+                    {
+                      bookingId,
+                      customerId: bd.customer_id,
+                      catererOwnerId: bd.caterer_owner_id,
+                      catererName: bd.business_name,
+                      eventDate: bd.event_date,
+                      amountPaidINR: `₹${((amountPaise || payRow.amount_paise) / 100).toLocaleString('en-IN')}`,
+                    },
+                    client
+                  );
+                }
+              }
             }
+
+            await client.query('COMMIT');
+            return reply.send({ received: true });
+          } catch (txErr) {
+            await client.query('ROLLBACK');
+            throw txErr;
+          } finally {
+            client.release();
           }
         }
       }
 
       return reply.send({ received: true });
     } catch (err: any) {
-      console.error('Webhook error:', err);
-      return reply.status(500).send({ error: err.message });
+      req.log.error(err);
+      return reply.status(500).send({ error: 'Failed to process payment webhook' });
     }
   });
 
-  // Generate settlement ledger entry for a completed booking
+  // Generate settlement ledger entry for a completed booking - ADMIN GUARD
   server.post('/api/payments/settlements/generate', async (req, reply) => {
     try {
+      const authUser = getAuthenticatedUser(req);
+      if (!authUser || authUser.role !== 'admin') {
+        return reply.status(403).send({ error: 'Forbidden: Admin access required' });
+      }
+
       const { bookingId } = (req.body as any) || {};
       if (!bookingId) {
         return reply.status(400).send({ error: 'bookingId is required' });
       }
 
-      // Query booking details
+      // Query booking details and caterer dynamic commission
       const bRes = await pgPool.query(
-        'SELECT id, caterer_id, status, total_amount_paise, commission_pct FROM order_svc.bookings WHERE id = $1',
+        `SELECT b.id, b.caterer_id, b.status, b.total_amount_paise, 
+                COALESCE(c.commission_pct, b.commission_pct, 15.00) as commission_pct
+         FROM order_svc.bookings b
+         LEFT JOIN caterer_svc.caterers c ON b.caterer_id = c.id
+         WHERE b.id = $1`,
         [bookingId]
       );
 
@@ -222,6 +396,7 @@ export function buildPaymentServer() {
       const booking = bRes.rows[0];
       const grossPaise = booking.total_amount_paise || 0;
       const commissionPct = parseFloat(booking.commission_pct || '15.00');
+      // Exact integer paise with round half up
       const commissionPaise = Math.round((grossPaise * commissionPct) / 100);
       const netPayoutPaise = grossPaise - commissionPaise;
 
@@ -231,6 +406,7 @@ export function buildPaymentServer() {
          VALUES ($1, $2, $3, $4, $5, $6, 'pending')
          ON CONFLICT (booking_id) DO UPDATE 
          SET gross_amount_paise = EXCLUDED.gross_amount_paise,
+             commission_pct = EXCLUDED.commission_pct,
              commission_amount_paise = EXCLUDED.commission_amount_paise,
              net_payout_paise = EXCLUDED.net_payout_paise,
              updated_at = NOW()
@@ -240,15 +416,27 @@ export function buildPaymentServer() {
 
       return reply.status(201).send({ settlement: sRes.rows[0] });
     } catch (err: any) {
-      console.error('POST /settlements/generate error:', err);
-      return reply.status(500).send({ error: err.message });
+      req.log.error(err);
+      return reply.status(500).send({ error: 'Failed to generate settlement' });
     }
   });
 
-  // Get caterer's financial settlement ledger & totals
+  // Get caterer's financial settlement ledger & totals - CATERER OWNER OR ADMIN GUARD
   server.get('/api/payments/settlements/caterer/:catererId', async (req, reply) => {
     try {
+      const authUser = getAuthenticatedUser(req);
+      if (!authUser) {
+        return reply.status(401).send({ error: 'Unauthorized: Authentication required' });
+      }
+
       const { catererId } = req.params as { catererId: string };
+
+      if (authUser.role !== 'admin') {
+        const cRes = await pgPool.query('SELECT owner_id FROM caterer_svc.caterers WHERE id = $1', [catererId]);
+        if (cRes.rows.length === 0 || cRes.rows[0].owner_id !== authUser.userId) {
+          return reply.status(403).send({ error: 'Forbidden: You do not own this caterer ledger' });
+        }
+      }
 
       const settlementsRes = await pgPool.query(
         `SELECT s.*, b.event_date
@@ -304,14 +492,19 @@ export function buildPaymentServer() {
         settlements,
       });
     } catch (err: any) {
-      console.error('GET /settlements/caterer error:', err);
-      return reply.status(500).send({ error: err.message });
+      req.log.error(err);
+      return reply.status(500).send({ error: 'Failed to retrieve settlements' });
     }
   });
 
-  // Admin marks settlement as disbursed with bank UTR reference
+  // Admin marks settlement as disbursed with bank UTR reference - ADMIN GUARD
   server.post('/api/payments/settlements/:id/disburse', async (req, reply) => {
     try {
+      const authUser = getAuthenticatedUser(req);
+      if (!authUser || authUser.role !== 'admin') {
+        return reply.status(403).send({ error: 'Forbidden: Admin access required' });
+      }
+
       const { id } = req.params as { id: string };
       const parseResult = disburseSettlementSchema.safeParse(req.body);
       if (!parseResult.success) {
@@ -336,14 +529,19 @@ export function buildPaymentServer() {
 
       return reply.send({ settlement: updateRes.rows[0] });
     } catch (err: any) {
-      console.error('POST /settlements/:id/disburse error:', err);
-      return reply.status(500).send({ error: err.message });
+      req.log.error(err);
+      return reply.status(500).send({ error: 'Failed to disburse settlement' });
     }
   });
 
-  // Admin: List all caterer settlements across the platform
+  // Admin: List all caterer settlements across the platform - ADMIN GUARD
   server.get('/api/admin/settlements', async (req, reply) => {
     try {
+      const authUser = getAuthenticatedUser(req);
+      if (!authUser || authUser.role !== 'admin') {
+        return reply.status(403).send({ error: 'Forbidden: Admin access required' });
+      }
+
       const { status } = req.query as { status?: string };
       let sql = `
         SELECT 
@@ -384,14 +582,19 @@ export function buildPaymentServer() {
 
       return reply.send({ settlements });
     } catch (err: any) {
-      console.error('GET /api/admin/settlements error:', err);
-      return reply.status(500).send({ error: err.message });
+      req.log.error(err);
+      return reply.status(500).send({ error: 'Failed to list admin settlements' });
     }
   });
 
-  // Admin: Platform financial & booking analytics
-  server.get('/api/admin/analytics', async (_req, reply) => {
+  // Admin: Platform financial & booking analytics - ADMIN GUARD
+  server.get('/api/admin/analytics', async (req, reply) => {
     try {
+      const authUser = getAuthenticatedUser(req);
+      if (!authUser || authUser.role !== 'admin') {
+        return reply.status(403).send({ error: 'Forbidden: Admin access required' });
+      }
+
       // 1. Booking & GMV metrics
       const bookingAggRes = await pgPool.query(`
         SELECT 
@@ -440,14 +643,19 @@ export function buildPaymentServer() {
         },
       });
     } catch (err: any) {
-      console.error('GET /api/admin/analytics error:', err);
-      return reply.status(500).send({ error: err.message });
+      req.log.error(err);
+      return reply.status(500).send({ error: 'Failed to retrieve admin analytics' });
     }
   });
 
-  // Admin alias for settlement disbursement
+  // Admin alias for settlement disbursement - ADMIN GUARD
   server.post('/api/admin/settlements/:id/disburse', async (req, reply) => {
     try {
+      const authUser = getAuthenticatedUser(req);
+      if (!authUser || authUser.role !== 'admin') {
+        return reply.status(403).send({ error: 'Forbidden: Admin access required' });
+      }
+
       const { id } = req.params as { id: string };
       const parseResult = disburseSettlementSchema.safeParse(req.body);
       if (!parseResult.success) {
@@ -472,8 +680,8 @@ export function buildPaymentServer() {
 
       return reply.send({ success: true, settlement: updateRes.rows[0] });
     } catch (err: any) {
-      console.error('POST /api/admin/settlements/:id/disburse error:', err);
-      return reply.status(500).send({ error: err.message });
+      req.log.error(err);
+      return reply.status(500).send({ error: 'Failed to disburse settlement' });
     }
   });
 

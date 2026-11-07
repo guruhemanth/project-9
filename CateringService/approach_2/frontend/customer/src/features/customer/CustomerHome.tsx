@@ -1,143 +1,233 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
-import { Search, MapPin, Star, Utensils, Filter } from 'lucide-react';
+import { Search, MapPin, Star, Utensils, Filter, Globe, ChevronDown, Check } from 'lucide-react';
 import { formatPaiseToINR } from '@/lib/formatters';
+import { fetchCaterers } from './api';
+import { POPULAR_CATERING_HUBS } from '@caterconnect/shared';
 import type { Caterer } from '@/types/database';
 
 export const CustomerHome: React.FC = () => {
+  const [selectedCity, setSelectedCity] = useState<string>(() => {
+    return localStorage.getItem('caterconnect_customer_city') || 'All India';
+  });
   const [selectedCuisine, setSelectedCuisine] = useState('all');
   const [searchQuery, setSearchQuery] = useState('');
+  const [caterers, setCaterers] = useState<(Caterer & { startingPricePaise: number })[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [showCityPicker, setShowCityPicker] = useState(false);
 
-  const [caterers] = useState<(Caterer & { startingPricePaise: number })[]>([
-    {
-      id: 'd0000000-0000-0000-0000-000000000001',
-      owner_id: 'c0000000-0000-0000-0000-000000000002',
-      business_name: 'Sri Venkateswara Catering Services',
-      description: 'Authentic Andhra & South Indian traditional wedding and event feasts in Tirupati.',
-      city: 'Tirupati',
-      service_areas: ['Alipiri', 'MR Palli', 'Bhavani Nagar', 'Chandragiri', 'Renigunta'],
-      cuisines: ['andhra', 'south_indian', 'traditional_meals'],
-      fssai_number: '10123000004567',
-      gst_number: '37AAAAA0000A1Z5',
-      status: 'approved',
-      rejection_reason: null,
-      avg_rating: 4.8,
-      review_count: 12,
-      startingPricePaise: 18000,
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-    },
-    {
-      id: 'd0000000-0000-0000-0000-000000000005',
-      owner_id: 'c0000000-0000-0000-0000-000000000005',
-      business_name: 'Sapthagiri Grand Feast',
-      description: 'Grand vegetarian wedding arrangements, banana leaf catering, and evening snacks counter.',
-      city: 'Tirupati',
-      service_areas: ['Alipiri', 'AIR Bypass Road', 'Korlagunta'],
-      cuisines: ['south_indian', 'traditional_meals'],
-      fssai_number: '10123000009988',
-      gst_number: null,
-      status: 'approved',
-      rejection_reason: null,
-      avg_rating: 4.9,
-      review_count: 24,
-      startingPricePaise: 25000,
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-    },
-  ]);
+  const handleSelectCity = (city: string) => {
+    setSelectedCity(city);
+    localStorage.setItem('caterconnect_customer_city', city);
+    setShowCityPicker(false);
+  };
+
+  useEffect(() => {
+    let isMounted = true;
+    setLoading(true);
+    setError(null);
+
+    const cityParam = selectedCity === 'All India' ? undefined : selectedCity;
+    const cuisineParam = selectedCuisine === 'all' ? undefined : selectedCuisine;
+
+    fetchCaterers({ city: cityParam, cuisine: cuisineParam })
+      .then((res) => {
+        if (!isMounted) return;
+        const mapped = (res.caterers || []).map((c: any) => {
+          let minPrice = 18000;
+          if (c.packages && c.packages.length > 0) {
+            const prices = c.packages
+              .map((p: any) => p.pricePerPlatePaise || p.price_per_plate_paise)
+              .filter(Boolean);
+            if (prices.length > 0) {
+              minPrice = Math.min(...prices);
+            }
+          }
+          return {
+            id: c.id,
+            owner_id: c.ownerId || c.owner_id,
+            business_name: c.businessName || c.business_name,
+            description: c.description,
+            city: c.city || 'Tirupati',
+            state: c.state || 'Andhra Pradesh',
+            pincode: c.pincode || null,
+            address: c.address || null,
+            service_areas: c.serviceAreas || c.service_areas || [],
+            cuisines: c.cuisines || [],
+            fssai_number: c.fssaiNumber || c.fssai_number,
+            gst_number: c.gstNumber || c.gst_number,
+            status: c.status,
+            rejection_reason: c.rejectionReason || null,
+            avg_rating: c.avgRating !== undefined ? c.avgRating : 4.8,
+            review_count: c.reviewCount !== undefined ? c.reviewCount : 12,
+            startingPricePaise: minPrice,
+            created_at: c.createdAt || new Date().toISOString(),
+            updated_at: c.updatedAt || new Date().toISOString(),
+          };
+        });
+        setCaterers(mapped);
+      })
+      .catch((err: any) => {
+        if (!isMounted) return;
+        console.error('Failed to fetch caterers:', err);
+        setError('Failed to load caterers for the selected location.');
+      })
+      .finally(() => {
+        if (isMounted) setLoading(false);
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [selectedCity, selectedCuisine]);
 
   const filteredCaterers = caterers.filter((c) => {
-    const matchesCuisine =
-      selectedCuisine === 'all' || c.cuisines.includes(selectedCuisine);
-    const matchesSearch =
-      c.business_name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      c.description?.toLowerCase().includes(searchQuery.toLowerCase());
-    return matchesCuisine && matchesSearch;
+    if (!searchQuery.trim()) return true;
+    const q = searchQuery.toLowerCase();
+    const matchesName = c.business_name.toLowerCase().includes(q);
+    const matchesDesc = c.description?.toLowerCase().includes(q) || false;
+    const matchesCity = c.city.toLowerCase().includes(q);
+    const matchesArea = c.service_areas.some((a) => a.toLowerCase().includes(q));
+    const matchesCuisine = c.cuisines.some((cuis) => cuis.toLowerCase().includes(q));
+    return matchesName || matchesDesc || matchesCity || matchesArea || matchesCuisine;
   });
 
   return (
     <div className="space-y-8">
-      {/* Hero */}
-      <section className="rounded-2xl bg-gradient-to-br from-emerald-800 to-teal-900 py-12 px-6 text-white shadow-md sm:px-12 sm:py-16 text-center">
-        <h1 className="text-3xl font-extrabold sm:text-4xl tracking-tight">
-          Find Authentic Caterers in Tirupati
-        </h1>
-        <p className="mt-3 text-emerald-100 max-w-xl mx-auto text-sm sm:text-base">
-          Verified FSSAI catering services for weddings, housewarmings, birthdays, and family gatherings.
-        </p>
+      {/* Hero Section */}
+      <section className="relative rounded-2xl bg-gradient-to-br from-emerald-800 to-teal-950 py-12 px-6 text-white shadow-md sm:px-12 sm:py-16 text-center overflow-hidden">
+        <div className="relative z-10">
+          <div className="inline-flex items-center gap-2 rounded-full bg-emerald-700/60 px-3.5 py-1 text-xs font-semibold text-emerald-200 border border-emerald-600/50 mb-3">
+            <Globe className="h-3.5 w-3.5 text-emerald-300" />
+            <span>Pan-India Catering Marketplace</span>
+          </div>
 
-        {/* Search Bar */}
-        <div className="mt-8 mx-auto flex max-w-lg items-center rounded-xl bg-white p-2 shadow-lg text-slate-800">
-          <MapPin className="ml-2 h-5 w-5 text-emerald-600 shrink-0" />
-          <input
-            type="text"
-            readOnly
-            value="Tirupati, AP"
-            className="w-28 sm:w-32 bg-transparent px-2 text-xs sm:text-sm font-semibold outline-none cursor-default border-r border-slate-200"
-          />
-          <Search className="ml-3 h-4 w-4 text-slate-400 shrink-0" />
-          <input
-            type="text"
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Search caterer name or cuisine..."
-            className="w-full bg-transparent px-2 text-xs sm:text-sm outline-none"
-          />
+          <h1 className="text-3xl font-extrabold sm:text-4xl lg:text-5xl tracking-tight">
+            Find Authentic Caterers {selectedCity === 'All India' ? 'Across India' : `in ${selectedCity}`}
+          </h1>
+          <p className="mt-3 text-emerald-100 max-w-2xl mx-auto text-sm sm:text-base">
+            Verified FSSAI catering services for grand weddings, housewarmings, corporate banquets, and family feasts.
+          </p>
+
+          {/* Unified Location & Search Bar */}
+          <div className="mt-8 mx-auto flex max-w-xl flex-col sm:flex-row items-center rounded-xl bg-white p-2 shadow-xl text-slate-800 gap-2">
+            {/* Interactive City Selector */}
+            <div className="relative w-full sm:w-auto">
+              <button
+                type="button"
+                onClick={() => setShowCityPicker(!showCityPicker)}
+                className="flex w-full sm:w-44 items-center justify-between rounded-lg bg-slate-50 px-3 py-2 text-xs sm:text-sm font-semibold text-slate-800 hover:bg-slate-100 border border-slate-200 transition"
+              >
+                <div className="flex items-center gap-1.5 truncate">
+                  <MapPin className="h-4 w-4 text-emerald-600 shrink-0" />
+                  <span className="truncate">{selectedCity}</span>
+                </div>
+                <ChevronDown className="h-3.5 w-3.5 text-slate-400 shrink-0 ml-1" />
+              </button>
+
+              {/* City Dropdown Menu */}
+              {showCityPicker && (
+                <div className="absolute left-0 top-full mt-2 z-50 w-64 rounded-xl border border-slate-200 bg-white p-2 shadow-2xl text-left">
+                  <div className="px-2 py-1 text-[11px] font-bold uppercase tracking-wider text-slate-400">
+                    Select Your Location
+                  </div>
+                  <div className="max-h-60 overflow-y-auto space-y-1">
+                    {POPULAR_CATERING_HUBS.map((hub) => (
+                      <button
+                        key={hub.city}
+                        type="button"
+                        onClick={() => handleSelectCity(hub.city)}
+                        className={`flex w-full items-center justify-between rounded-lg px-2.5 py-1.5 text-xs font-semibold transition ${
+                          selectedCity === hub.city
+                            ? 'bg-emerald-50 text-emerald-800'
+                            : 'text-slate-700 hover:bg-slate-50'
+                        }`}
+                      >
+                        <span>{hub.label}</span>
+                        {selectedCity === hub.city && <Check className="h-3.5 w-3.5 text-emerald-600" />}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Keyword Search */}
+            <div className="flex flex-1 items-center w-full px-2">
+              <Search className="h-4 w-4 text-slate-400 shrink-0" />
+              <input
+                type="text"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder="Search caterer, cuisine, or area..."
+                className="w-full bg-transparent px-2.5 text-xs sm:text-sm outline-none placeholder:text-slate-400"
+              />
+            </div>
+          </div>
+
+          {/* Quick Hub Filter Chips */}
+          <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
+            <span className="text-xs text-emerald-200 font-medium mr-1">Popular:</span>
+            {['All India', 'Tirupati', 'Bengaluru', 'Hyderabad', 'Chennai'].map((city) => (
+              <button
+                key={city}
+                onClick={() => handleSelectCity(city)}
+                className={`rounded-full px-3 py-1 text-xs font-semibold transition ${
+                  selectedCity === city
+                    ? 'bg-white text-emerald-900 shadow-xs'
+                    : 'bg-emerald-800/80 text-emerald-100 hover:bg-emerald-700 border border-emerald-600/50'
+                }`}
+              >
+                {city}
+              </button>
+            ))}
+          </div>
         </div>
       </section>
 
       {/* Cuisines Filter Chips */}
       <div className="flex items-center gap-2 overflow-x-auto pb-2">
         <Filter className="h-4 w-4 text-slate-400 shrink-0" />
-        <button
-          onClick={() => setSelectedCuisine('all')}
-          className={`rounded-full px-3 py-1.5 text-xs font-semibold shrink-0 transition ${
-            selectedCuisine === 'all'
-              ? 'bg-emerald-700 text-white shadow-xs'
-              : 'bg-white border border-slate-200 text-slate-700 hover:bg-slate-50'
-          }`}
-        >
-          All Cuisines
-        </button>
-        <button
-          onClick={() => setSelectedCuisine('andhra')}
-          className={`rounded-full px-3 py-1.5 text-xs font-semibold shrink-0 transition ${
-            selectedCuisine === 'andhra'
-              ? 'bg-emerald-700 text-white shadow-xs'
-              : 'bg-white border border-slate-200 text-slate-700 hover:bg-slate-50'
-          }`}
-        >
-          Andhra Traditional
-        </button>
-        <button
-          onClick={() => setSelectedCuisine('south_indian')}
-          className={`rounded-full px-3 py-1.5 text-xs font-semibold shrink-0 transition ${
-            selectedCuisine === 'south_indian'
-              ? 'bg-emerald-700 text-white shadow-xs'
-              : 'bg-white border border-slate-200 text-slate-700 hover:bg-slate-50'
-          }`}
-        >
-          South Indian
-        </button>
-        <button
-          onClick={() => setSelectedCuisine('traditional_meals')}
-          className={`rounded-full px-3 py-1.5 text-xs font-semibold shrink-0 transition ${
-            selectedCuisine === 'traditional_meals'
-              ? 'bg-emerald-700 text-white shadow-xs'
-              : 'bg-white border border-slate-200 text-slate-700 hover:bg-slate-50'
-          }`}
-        >
-          Banana Leaf Feasts
-        </button>
+        {[
+          { id: 'all', label: 'All Cuisines' },
+          { id: 'andhra', label: 'Andhra Traditional' },
+          { id: 'south_indian', label: 'South Indian' },
+          { id: 'north_indian', label: 'North Indian' },
+          { id: 'hyderabadi', label: 'Hyderabadi Biryani' },
+          { id: 'traditional_meals', label: 'Banana Leaf Feasts' },
+        ].map((item) => (
+          <button
+            key={item.id}
+            onClick={() => setSelectedCuisine(item.id)}
+            className={`rounded-full px-3.5 py-1.5 text-xs font-semibold shrink-0 transition ${
+              selectedCuisine === item.id
+                ? 'bg-emerald-700 text-white shadow-xs'
+                : 'bg-white border border-slate-200 text-slate-700 hover:bg-slate-50'
+            }`}
+          >
+            {item.label}
+          </button>
+        ))}
       </div>
 
       {/* Caterers Grid */}
       <section className="space-y-4">
         <div className="flex items-center justify-between">
-          <h2 className="text-lg font-bold text-slate-900">
-            Verified Caterers in Tirupati ({filteredCaterers.length})
-          </h2>
+          <div>
+            <h2 className="text-lg font-bold text-slate-900 flex items-center gap-2">
+              <span>
+                Verified Caterers {selectedCity === 'All India' ? 'Across India' : `in ${selectedCity}`}
+              </span>
+              <span className="rounded-full bg-slate-100 text-slate-600 text-xs px-2 py-0.5 font-bold">
+                {filteredCaterers.length}
+              </span>
+            </h2>
+            <p className="text-xs text-slate-500 mt-0.5">
+              FSSAI compliant catering services accepting event bookings
+            </p>
+          </div>
+
           <Link
             to="/customer/bookings"
             className="text-xs font-semibold text-emerald-700 hover:text-emerald-800"
@@ -146,11 +236,36 @@ export const CustomerHome: React.FC = () => {
           </Link>
         </div>
 
-        {filteredCaterers.length === 0 ? (
-          <div className="rounded-xl border border-dashed border-slate-200 bg-white p-8 text-center">
-            <Utensils className="mx-auto h-8 w-8 text-slate-300" />
-            <p className="mt-2 text-sm font-semibold text-slate-700">No caterers match your search</p>
-            <p className="text-xs text-slate-400">Try adjusting your filters or search keywords.</p>
+        {loading ? (
+          <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3">
+            {[1, 2, 3].map((n) => (
+              <div key={n} className="rounded-xl border border-slate-200 bg-white p-4 space-y-3 animate-pulse">
+                <div className="h-36 bg-slate-100 rounded-lg" />
+                <div className="h-4 bg-slate-200 rounded w-2/3" />
+                <div className="h-3 bg-slate-100 rounded w-full" />
+                <div className="h-8 bg-slate-100 rounded mt-4" />
+              </div>
+            ))}
+          </div>
+        ) : error ? (
+          <div className="rounded-xl border border-red-200 bg-red-50 p-6 text-center text-red-700 text-sm">
+            {error}
+          </div>
+        ) : filteredCaterers.length === 0 ? (
+          <div className="rounded-xl border border-dashed border-slate-200 bg-white p-10 text-center space-y-3">
+            <Utensils className="mx-auto h-10 w-10 text-slate-300" />
+            <p className="text-base font-bold text-slate-800">
+              No caterers currently found in {selectedCity}
+            </p>
+            <p className="text-xs text-slate-500 max-w-md mx-auto">
+              We are onboarding new approved caterers across India daily. Try selecting another city or explore all caterers.
+            </p>
+            <button
+              onClick={() => handleSelectCity('All India')}
+              className="mt-2 rounded-lg bg-emerald-600 px-4 py-2 text-xs font-bold text-white hover:bg-emerald-700 transition"
+            >
+              Browse All India Caterers
+            </button>
           </div>
         ) : (
           <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3">
@@ -159,10 +274,16 @@ export const CustomerHome: React.FC = () => {
                 key={caterer.id}
                 className="flex flex-col rounded-xl border border-slate-200 bg-white shadow-xs overflow-hidden hover:shadow-md transition"
               >
-                <div className="h-36 bg-gradient-to-r from-emerald-100 to-teal-100 flex items-center justify-center text-emerald-800">
+                <div className="h-36 bg-gradient-to-r from-emerald-100 to-teal-100 flex items-center justify-center text-emerald-800 relative">
                   <span className="text-3xl font-serif font-bold">
                     {caterer.business_name.slice(0, 2).toUpperCase()}
                   </span>
+                  <div className="absolute top-3 left-3 flex items-center gap-1 rounded-full bg-white/90 backdrop-blur px-2.5 py-0.5 text-[10px] font-bold text-slate-800 shadow-2xs">
+                    <MapPin className="h-3 w-3 text-emerald-600" />
+                    <span>
+                      {caterer.city}, {caterer.state}
+                    </span>
+                  </div>
                 </div>
 
                 <div className="p-4 flex-1 flex flex-col justify-between">
@@ -181,6 +302,17 @@ export const CustomerHome: React.FC = () => {
 
                     <h3 className="mt-2 text-base font-bold text-slate-900">{caterer.business_name}</h3>
                     <p className="mt-1 text-xs text-slate-600 line-clamp-2">{caterer.description}</p>
+
+                    {/* Service Areas Coverage */}
+                    {caterer.service_areas && caterer.service_areas.length > 0 && (
+                      <div className="mt-2 text-[11px] text-slate-500">
+                        <span className="font-semibold text-slate-700">Servicing: </span>
+                        <span>{caterer.service_areas.slice(0, 3).join(', ')}</span>
+                        {caterer.service_areas.length > 3 && (
+                          <span className="text-emerald-700 font-semibold"> +{caterer.service_areas.length - 3} more</span>
+                        )}
+                      </div>
+                    )}
 
                     <div className="mt-3 flex flex-wrap gap-1">
                       {caterer.cuisines.map((c) => (

@@ -1,9 +1,16 @@
 import pg from 'pg';
+import { validateEnv, createDbEnvSchema } from '@caterconnect/shared';
 
 const { Pool } = pg;
+const env = validateEnv(createDbEnvSchema(), process.env);
 
 export const pgPool = new Pool({
-  connectionString:
-    process.env.APP_DATABASE_URL ||
-    (process.env.DATABASE_URL?.includes('54322') ? process.env.DATABASE_URL : 'postgresql://postgres:postgres@127.0.0.1:54322/caterconnect'),
+  connectionString: env.DATABASE_URL,
+  max: 20,
+  idleTimeoutMillis: 30000,
+  connectionTimeoutMillis: 5000,
+});
+
+pgPool.on('error', (err: Error) => {
+  console.error('[Postgres Pool Error (auth-service)]: Unexpected idle client error:', err.message);
 });

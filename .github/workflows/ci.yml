@@ -1,0 +1,68 @@
+name: CaterConnect CI & Security Pipeline
+
+on:
+  push:
+    branches: [main, 'hardening/**', 'release/**']
+  pull_request:
+    branches: [main]
+
+jobs:
+  audit-and-test:
+    name: Typecheck, Test & Security Audit
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgrespassword
+          POSTGRES_DB: caterconnect
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 12.16.1
+          run_install: false
+
+      - name: Install Dependencies
+        working-directory: CateringService/approach_2
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck Workspace
+        working-directory: CateringService/approach_2
+        run: pnpm -r run build
+
+      - name: Run Database Migrations
+        working-directory: CateringService/approach_2
+        env:
+          DATABASE_URL: postgresql://postgres:postgrespassword@localhost:5432/caterconnect
+        run: pnpm tsx database/migrator.ts
+
+      - name: Run Test Suites (Serialized)
+        working-directory: CateringService/approach_2
+        env:
+          DATABASE_URL: postgresql://postgres:postgrespassword@localhost:5432/caterconnect
+          JWT_SECRET: super-secret-testing-jwt-token-with-at-least-32-chars
+          NODE_ENV: test
+        run: pnpm -r --workspace-concurrency=1 test
+
+      - name: Dependency Security Audit
+        working-directory: CateringService/approach_2
+        run: pnpm audit --audit-level=high

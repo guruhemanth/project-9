@@ -1,20 +1,71 @@
 import Fastify from 'fastify';
 import fastifyCors from '@fastify/cors';
+import fastifyHelmet from '@fastify/helmet';
 import { pgPool } from './db';
 import {
   bookingRequestSchema,
   BookingStatus,
   canTransitionBooking,
   calculateCancellationRefund,
+  validateEnv,
+  createDbEnvSchema,
+  buildCorsOptions,
+  registerCentralizedErrorHandler,
+  loggerRedactionConfig,
+  getAuthenticatedUser,
 } from '@caterconnect/shared';
+import { enqueueOutboxNotification } from './outbox';
 
 export function buildBookingServer() {
-  const server = Fastify({ logger: false });
+  const env = validateEnv(createDbEnvSchema(), process.env);
+  const server = Fastify({
+    logger: {
+      redact: loggerRedactionConfig,
+    },
+    bodyLimit: 1048576,
+    connectionTimeout: 10000,
+    requestTimeout: 15000,
+  });
 
-  server.register(fastifyCors, { origin: true });
+  registerCentralizedErrorHandler(server, 'booking-order-service');
 
-  // Health check
+  server.addHook('onClose', async () => {
+    if (!(pgPool as any).ending) {
+      await pgPool.end();
+    }
+  });
+
+  server.register(fastifyHelmet, { contentSecurityPolicy: false });
+  server.register(fastifyCors, buildCorsOptions(env.ALLOWED_ORIGINS, env.NODE_ENV));
+
+  // Helper: Assert that actor owns the caterer business associated with this booking
+  async function assertBookingCatererOwner(bookingId: string, actorId: string, actorRole: string): Promise<{ authorized: boolean; booking?: any }> {
+    if (actorRole === 'admin') {
+      const bRes = await pgPool.query('SELECT * FROM order_svc.bookings WHERE id = $1', [bookingId]);
+      return { authorized: bRes.rows.length > 0, booking: bRes.rows[0] };
+    }
+    const res = await pgPool.query(
+      `SELECT b.*, c.owner_id 
+       FROM order_svc.bookings b
+       JOIN caterer_svc.caterers c ON b.caterer_id = c.id
+       WHERE b.id = $1`,
+      [bookingId]
+    );
+    if (res.rows.length === 0) return { authorized: false };
+    const b = res.rows[0];
+    return { authorized: b.owner_id === actorId, booking: b };
+  }
+
+  // Health & Readiness checks
   server.get('/health', async () => ({ status: 'ok', service: 'booking-order-service' }));
+  server.get('/ready', async (_req, reply) => {
+    try {
+      await pgPool.query('SELECT 1');
+      return { status: 'ready', database: 'connected', service: 'booking-order-service' };
+    } catch (err: any) {
+      return reply.status(503).send({ status: 'not_ready', database: 'disconnected', service: 'booking-order-service' });
+    }
+  });
 
   // Create booking request (Customer)
   server.post('/api/bookings', async (req, reply) => {
@@ -27,12 +78,20 @@ export function buildBookingServer() {
         });
       }
 
-      const customerId = (req.headers['x-user-id'] as string) || (req.body as any).customerId;
-      if (!customerId) {
-        return reply.status(401).send({ error: 'Missing customer identity' });
+      const authUser = getAuthenticatedUser(req);
+      if (!authUser) {
+        return reply.status(401).send({ error: 'Unauthorized: Authentication required' });
       }
 
-      const { catererId, packageId, eventDate, eventTime, guestCount, venueAddress, city, specialRequests } =
+      const customerId = authUser.userId;
+
+      // Verify customer has a valid phone number before allowing booking submission
+      const uRes = await pgPool.query('SELECT phone FROM auth_svc.users WHERE id = $1', [customerId]);
+      if (uRes.rows.length > 0 && !uRes.rows[0].phone) {
+        return reply.status(400).send({ error: 'Please add and verify your phone number before placing a booking.' });
+      }
+
+      const { catererId, packageId, eventDate, eventTime, guestCount, venueAddress, city, state, pincode, specialRequests } =
         parseResult.data;
 
       // Check caterer availability for eventDate
@@ -63,8 +122,8 @@ export function buildBookingServer() {
 
       const insertRes = await pgPool.query(
         `INSERT INTO order_svc.bookings 
-         (customer_id, caterer_id, package_id, event_date, event_time, guest_count, venue_address, city, special_requests, total_amount_paise, status)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'requested')
+         (customer_id, caterer_id, package_id, event_date, event_time, guest_count, venue_address, city, state, pincode, special_requests, total_amount_paise, status)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'requested')
          RETURNING *`,
         [
           customerId,
@@ -75,6 +134,8 @@ export function buildBookingServer() {
           guestCount,
           venueAddress,
           city,
+          state || 'Andhra Pradesh',
+          pincode || null,
           specialRequests || null,
           totalAmountPaise,
         ]
@@ -89,19 +150,41 @@ export function buildBookingServer() {
         [booking.id, customerId]
       );
 
+      // Enqueue Outbox event: booking_requested -> caterer
+      const catererOwnerRes = await pgPool.query(
+        `SELECT c.owner_id, c.business_name, u.phone 
+         FROM caterer_svc.caterers c
+         JOIN auth_svc.users u ON c.owner_id = u.id
+         WHERE c.id = $1`,
+        [catererId]
+      );
+      const catererOwner = catererOwnerRes.rows[0];
+      await enqueueOutboxNotification('booking_requested', {
+        bookingId: booking.id,
+        customerId,
+        catererId,
+        catererOwnerId: catererOwner?.owner_id,
+        catererPhone: catererOwner?.phone,
+        catererName: catererOwner?.business_name,
+        eventDate,
+        guestCount,
+      });
+
       return reply.status(201).send({ booking });
     } catch (err: any) {
-      console.error('POST /api/bookings error:', err);
-      return reply.status(500).send({ error: err.message });
+      req.log.error(err);
+      return reply.status(500).send({ error: 'Failed to create booking' });
     }
   });
 
   // Get customer bookings
   server.get('/api/bookings/customer', async (req, reply) => {
-    const customerId = req.headers['x-user-id'] as string;
-    if (!customerId) {
-      return reply.status(401).send({ error: 'Missing customer identity' });
+    const authUser = getAuthenticatedUser(req);
+    if (!authUser) {
+      return reply.status(401).send({ error: 'Unauthorized: Authentication required' });
     }
+
+    const customerId = authUser.userId;
 
     const res = await pgPool.query(
       `SELECT b.*, c.business_name, p.name as package_name
@@ -116,9 +199,21 @@ export function buildBookingServer() {
     return reply.send({ bookings: res.rows });
   });
 
-  // Get caterer bookings
+  // Get caterer incoming bookings
   server.get('/api/bookings/caterer/:catererId', async (req, reply) => {
     const { catererId } = req.params as { catererId: string };
+    const authUser = getAuthenticatedUser(req);
+    if (!authUser) {
+      return reply.status(401).send({ error: 'Unauthorized: Authentication required' });
+    }
+
+    // Assert caller is the owner of this caterer business or admin
+    if (authUser.role !== 'admin') {
+      const cRes = await pgPool.query('SELECT owner_id FROM caterer_svc.caterers WHERE id = $1', [catererId]);
+      if (cRes.rows.length === 0 || cRes.rows[0].owner_id !== authUser.userId) {
+        return reply.status(403).send({ error: 'Forbidden: You do not own this caterer business' });
+      }
+    }
 
     const res = await pgPool.query(
       `SELECT b.*, p.name as package_name
@@ -132,16 +227,20 @@ export function buildBookingServer() {
     return reply.send({ bookings: res.rows });
   });
 
-  // Get booking details by ID
+  // Get single booking by ID (Must be customer, caterer owner, or admin)
   server.get('/api/bookings/:id', async (req, reply) => {
     const { id } = req.params as { id: string };
+    const authUser = getAuthenticatedUser(req);
+    if (!authUser) {
+      return reply.status(401).send({ error: 'Unauthorized: Authentication required' });
+    }
 
     const res = await pgPool.query(
-      `SELECT b.*, c.business_name, c.phone as caterer_phone, p.name as package_name
+      `SELECT b.*, c.business_name, c.owner_id as caterer_owner_id, p.name as package_name
        FROM order_svc.bookings b
        JOIN caterer_svc.caterers c ON b.caterer_id = c.id
        JOIN caterer_svc.packages p ON b.package_id = p.id
-       WHERE b.id = $1 LIMIT 1`,
+       WHERE b.id = $1`,
       [id]
     );
 
@@ -149,26 +248,37 @@ export function buildBookingServer() {
       return reply.status(404).send({ error: 'Booking not found' });
     }
 
-    return reply.send({ booking: res.rows[0] });
+    const b = res.rows[0];
+    if (authUser.role !== 'admin' && b.customer_id !== authUser.userId && b.caterer_owner_id !== authUser.userId) {
+      return reply.status(403).send({ error: 'Forbidden: You are not a party to this booking' });
+    }
+
+    return reply.send({ booking: b });
   });
 
-  // Caterer Accepts Booking (calculates & locks 15% platform commission)
+  // Caterer Accepts Booking - OWNERSHIP GUARD
   server.post('/api/bookings/:id/accept', async (req, reply) => {
     try {
       const { id } = req.params as { id: string };
       const catererNote = (req.body as any)?.catererNote || null;
-      const actorId = (req.headers['x-user-id'] as string) || null;
-      const actorRole = ((req.headers['x-user-role'] as string) || 'caterer') as any;
 
-      const cur = await pgPool.query('SELECT caterer_id, event_date, status, total_amount_paise FROM order_svc.bookings WHERE id = $1', [id]);
-      if (cur.rows.length === 0) return reply.status(404).send({ error: 'Booking not found' });
+      const authUser = getAuthenticatedUser(req);
+      if (!authUser) {
+        return reply.status(401).send({ error: 'Unauthorized: Authentication required' });
+      }
 
-      const currentStatus = cur.rows[0].status as BookingStatus;
-      if (!canTransitionBooking(currentStatus, 'accepted', actorRole)) {
+      const { authorized, booking } = await assertBookingCatererOwner(id, authUser.userId, authUser.role);
+      if (!booking) return reply.status(404).send({ error: 'Booking not found' });
+      if (!authorized) {
+        return reply.status(403).send({ error: 'Forbidden: You do not own this caterer business' });
+      }
+
+      const currentStatus = booking.status as BookingStatus;
+      if (!canTransitionBooking(currentStatus, 'accepted', authUser.role)) {
         return reply.status(400).send({ error: `Cannot transition booking from ${currentStatus} to accepted` });
       }
 
-      const { caterer_id, event_date } = cur.rows[0];
+      const { caterer_id, event_date } = booking;
 
       // Auto-lock the date in caterer_availability
       await pgPool.query(
@@ -179,7 +289,7 @@ export function buildBookingServer() {
         [caterer_id, event_date, id]
       );
 
-      const totalPaise = cur.rows[0].total_amount_paise || 0;
+      const totalPaise = booking.total_amount_paise || 0;
       const commissionPaise = Math.round(totalPaise * 0.15);
 
       const updateRes = await pgPool.query(
@@ -196,29 +306,48 @@ export function buildBookingServer() {
       await pgPool.query(
         `INSERT INTO order_svc.booking_status_history (booking_id, from_status, to_status, changed_by, note)
          VALUES ($1, $2, 'accepted', $3, $4)`,
-        [id, currentStatus, actorId, catererNote]
+        [id, currentStatus, authUser.userId, catererNote]
       );
+
+      // Enqueue Outbox event: booking_accepted -> customer
+      const custRes = await pgPool.query('SELECT email, phone FROM auth_svc.users WHERE id = $1', [booking.customer_id]);
+      const cust = custRes.rows[0];
+      const catRes = await pgPool.query('SELECT business_name FROM caterer_svc.caterers WHERE id = $1', [booking.caterer_id]);
+      await enqueueOutboxNotification('booking_accepted', {
+        bookingId: id,
+        customerId: booking.customer_id,
+        recipientPhone: cust?.phone,
+        catererName: catRes.rows[0]?.business_name,
+        eventDate: booking.event_date,
+        totalAmountINR: `₹${(totalPaise / 100).toLocaleString('en-IN')}`,
+      });
 
       return reply.send({ booking: updateRes.rows[0] });
     } catch (err: any) {
-      console.error('POST /accept error:', err);
-      return reply.status(500).send({ error: err.message });
+      req.log.error(err);
+      return reply.status(500).send({ error: 'Failed to accept booking' });
     }
   });
 
-  // Caterer Rejects Booking
+  // Caterer Rejects Booking - OWNERSHIP GUARD
   server.post('/api/bookings/:id/reject', async (req, reply) => {
     try {
       const { id } = req.params as { id: string };
       const reason = (req.body as any)?.reason || 'Unavailable on selected date';
-      const actorId = (req.headers['x-user-id'] as string) || null;
-      const actorRole = ((req.headers['x-user-role'] as string) || 'caterer') as any;
 
-      const cur = await pgPool.query('SELECT status FROM order_svc.bookings WHERE id = $1', [id]);
-      if (cur.rows.length === 0) return reply.status(404).send({ error: 'Booking not found' });
+      const authUser = getAuthenticatedUser(req);
+      if (!authUser) {
+        return reply.status(401).send({ error: 'Unauthorized: Authentication required' });
+      }
 
-      const currentStatus = cur.rows[0].status as BookingStatus;
-      if (!canTransitionBooking(currentStatus, 'rejected', actorRole)) {
+      const { authorized, booking } = await assertBookingCatererOwner(id, authUser.userId, authUser.role);
+      if (!booking) return reply.status(404).send({ error: 'Booking not found' });
+      if (!authorized) {
+        return reply.status(403).send({ error: 'Forbidden: You do not own this caterer business' });
+      }
+
+      const currentStatus = booking.status as BookingStatus;
+      if (!canTransitionBooking(currentStatus, 'rejected', authUser.role)) {
         return reply.status(400).send({ error: `Cannot transition booking from ${currentStatus} to rejected` });
       }
 
@@ -232,41 +361,66 @@ export function buildBookingServer() {
       await pgPool.query(
         `INSERT INTO order_svc.booking_status_history (booking_id, from_status, to_status, changed_by, note)
          VALUES ($1, $2, 'rejected', $3, $4)`,
-        [id, currentStatus, actorId, reason]
+        [id, currentStatus, authUser.userId, reason]
       );
+
+      // Enqueue Outbox event: booking_rejected -> customer
+      const catRes = await pgPool.query('SELECT business_name FROM caterer_svc.caterers WHERE id = $1', [booking.caterer_id]);
+      await enqueueOutboxNotification('booking_rejected', {
+        bookingId: id,
+        customerId: booking.customer_id,
+        catererName: catRes.rows[0]?.business_name,
+        eventDate: booking.event_date,
+        reason,
+      });
 
       return reply.send({ booking: updateRes.rows[0] });
     } catch (err: any) {
-      console.error('POST /reject error:', err);
-      return reply.status(500).send({ error: err.message });
+      req.log.error(err);
+      return reply.status(500).send({ error: 'Failed to reject booking' });
     }
   });
 
-  // Cancel Booking (with tiered refund calculation)
+  // Cancel Booking (with tiered refund calculation) - CUSTOMER OR CATERER OWNER OR ADMIN
   server.post('/api/bookings/:id/cancel', async (req, reply) => {
     try {
       const { id } = req.params as { id: string };
       const { reason } = (req.body as any) || {};
-      const actorRole = ((req.headers['x-user-role'] as string) || 'customer') as any;
-      const actorId = (req.headers['x-user-id'] as string) || null;
+
+      const authUser = getAuthenticatedUser(req);
+      if (!authUser) {
+        return reply.status(401).send({ error: 'Unauthorized: Authentication required' });
+      }
 
       const cur = await pgPool.query(
-        'SELECT status, event_date, amount_paid_paise FROM order_svc.bookings WHERE id = $1',
+        `SELECT b.status, b.event_date, b.amount_paid_paise, b.customer_id, c.owner_id as caterer_owner_id
+         FROM order_svc.bookings b
+         JOIN caterer_svc.caterers c ON b.caterer_id = c.id
+         WHERE b.id = $1`,
         [id]
       );
       if (cur.rows.length === 0) return reply.status(404).send({ error: 'Booking not found' });
 
       const row = cur.rows[0];
+      const isCustomer = row.customer_id === authUser.userId;
+      const isCatererOwner = row.caterer_owner_id === authUser.userId;
+      const isAdmin = authUser.role === 'admin';
+
+      if (!isCustomer && !isCatererOwner && !isAdmin) {
+        return reply.status(403).send({ error: 'Forbidden: You cannot cancel another party\'s booking' });
+      }
+
+      const effectiveRole = isAdmin ? 'caterer' : (isCustomer ? 'customer' : 'caterer');
       const currentStatus = row.status as BookingStatus;
 
-      if (!canTransitionBooking(currentStatus, 'cancelled', actorRole)) {
+      if (!canTransitionBooking(currentStatus, 'cancelled', effectiveRole)) {
         return reply.status(400).send({ error: `Cannot transition booking from ${currentStatus} to cancelled` });
       }
 
       let refundPaise = 0;
       if (currentStatus === 'paid' && row.amount_paid_paise > 0) {
         const eventDateStr = new Date(row.event_date).toISOString().split('T')[0];
-        refundPaise = calculateCancellationRefund(row.amount_paid_paise, actorRole, eventDateStr);
+        refundPaise = calculateCancellationRefund(row.amount_paid_paise, effectiveRole, eventDateStr);
       }
 
       const updateRes = await pgPool.query(
@@ -277,13 +431,13 @@ export function buildBookingServer() {
              refund_amount_paise = $3,
              updated_at = NOW()
          WHERE id = $4 RETURNING *`,
-        [actorRole, reason || 'User requested cancellation', refundPaise, id]
+        [effectiveRole, reason || 'User requested cancellation', refundPaise, id]
       );
 
       await pgPool.query(
         `INSERT INTO order_svc.booking_status_history (booking_id, from_status, to_status, changed_by, note)
          VALUES ($1, $2, 'cancelled', $3, $4)`,
-        [id, currentStatus, actorId, reason]
+        [id, currentStatus, authUser.userId, reason]
       );
 
       // Release auto-lock on caterer_availability
@@ -292,28 +446,43 @@ export function buildBookingServer() {
         [id]
       );
 
+      // Enqueue Outbox event: booking_cancelled -> other party
+      await enqueueOutboxNotification('booking_cancelled', {
+        bookingId: id,
+        customerId: row.customer_id,
+        catererOwnerId: row.caterer_owner_id,
+        cancelledBy: effectiveRole,
+        eventDate: row.event_date,
+        refundINR: refundPaise > 0 ? `₹${(refundPaise / 100).toLocaleString('en-IN')}` : '₹0',
+      });
+
       return reply.send({
         booking: updateRes.rows[0],
         refundAmountPaise: refundPaise,
       });
     } catch (err: any) {
-      console.error('POST /cancel error:', err);
-      return reply.status(500).send({ error: err.message });
+      req.log.error(err);
+      return reply.status(500).send({ error: 'Failed to cancel booking' });
     }
   });
 
-  // Complete Booking (Caterer/Admin)
+  // Complete Booking (Caterer/Admin) - OWNERSHIP GUARD
   server.post('/api/bookings/:id/complete', async (req, reply) => {
     try {
       const { id } = req.params as { id: string };
-      const actorRole = ((req.headers['x-user-role'] as string) || 'caterer') as any;
-      const actorId = (req.headers['x-user-id'] as string) || null;
+      const authUser = getAuthenticatedUser(req);
+      if (!authUser) {
+        return reply.status(401).send({ error: 'Unauthorized: Authentication required' });
+      }
 
-      const cur = await pgPool.query('SELECT status FROM order_svc.bookings WHERE id = $1', [id]);
-      if (cur.rows.length === 0) return reply.status(404).send({ error: 'Booking not found' });
+      const { authorized, booking } = await assertBookingCatererOwner(id, authUser.userId, authUser.role);
+      if (!booking) return reply.status(404).send({ error: 'Booking not found' });
+      if (!authorized) {
+        return reply.status(403).send({ error: 'Forbidden: You do not own this caterer business' });
+      }
 
-      const currentStatus = cur.rows[0].status as BookingStatus;
-      if (!canTransitionBooking(currentStatus, 'completed', actorRole)) {
+      const currentStatus = booking.status as BookingStatus;
+      if (!canTransitionBooking(currentStatus, 'completed', authUser.role)) {
         return reply.status(400).send({ error: `Cannot transition booking from ${currentStatus} to completed` });
       }
 
@@ -327,35 +496,46 @@ export function buildBookingServer() {
       await pgPool.query(
         `INSERT INTO order_svc.booking_status_history (booking_id, from_status, to_status, changed_by)
          VALUES ($1, $2, 'completed', $3)`,
-        [id, currentStatus, actorId]
+        [id, currentStatus, authUser.userId]
       );
+
+      // Enqueue Outbox event: booking_completed -> customer (review prompt)
+      const catRes = await pgPool.query('SELECT business_name FROM caterer_svc.caterers WHERE id = $1', [booking.caterer_id]);
+      await enqueueOutboxNotification('booking_completed', {
+        bookingId: id,
+        customerId: booking.customer_id,
+        catererName: catRes.rows[0]?.business_name,
+        eventDate: booking.event_date,
+      });
 
       return reply.send({ booking: updateRes.rows[0] });
     } catch (err: any) {
-      console.error('POST /complete error:', err);
-      return reply.status(500).send({ error: err.message });
+      req.log.error(err);
+      return reply.status(500).send({ error: 'Failed to complete booking' });
     }
   });
 
-  // Admin: Get all bookings across the platform
+  // Admin: Get all bookings across the platform - STRICT ADMIN GUARD
   server.get('/api/admin/bookings', async (req, reply) => {
     try {
+      const authUser = getAuthenticatedUser(req);
+      if (!authUser || authUser.role !== 'admin') {
+        return reply.status(403).send({ error: 'Forbidden: Admin access required' });
+      }
+
       const { status } = req.query as { status?: string };
       let sql = `
         SELECT 
           b.id, b.customer_id, b.caterer_id, b.package_id,
           TO_CHAR(b.event_date, 'YYYY-MM-DD') as event_date,
-          b.event_time, b.guest_count, b.venue_address, b.city,
-          b.special_requests, b.status, b.total_amount_paise,
-          b.commission_pct, b.commission_amount_paise, b.payment_type,
-          b.advance_pct, b.amount_paid_paise, b.balance_due_paise,
+          b.event_time, b.guest_count, b.venue_address, b.city, b.special_requests,
+          b.status, b.total_amount_paise, b.commission_pct, b.commission_amount_paise,
+          b.payment_type, b.advance_pct, b.amount_paid_paise, b.balance_due_paise,
           b.caterer_note, b.cancelled_by, b.cancel_reason, b.refund_amount_paise,
           b.created_at, b.updated_at,
           c.business_name as caterer_business_name,
           p.name as package_name,
-          u.full_name as customer_name,
-          u.phone as customer_phone,
-          u.email as customer_email
+          u.full_name as customer_name, u.phone as customer_phone, u.email as customer_email
         FROM order_svc.bookings b
         LEFT JOIN caterer_svc.caterers c ON b.caterer_id = c.id
         LEFT JOIN caterer_svc.packages p ON b.package_id = p.id
@@ -403,14 +583,19 @@ export function buildBookingServer() {
 
       return reply.send({ bookings });
     } catch (err: any) {
-      console.error('GET /api/admin/bookings error:', err);
-      return reply.status(500).send({ error: err.message });
+      req.log.error(err);
+      return reply.status(500).send({ error: 'Failed to list admin bookings' });
     }
   });
 
-  // Admin: Cancel booking (dispute resolution)
+  // Admin: Cancel booking (dispute resolution) - STRICT ADMIN GUARD
   server.post('/api/admin/bookings/:id/cancel', async (req, reply) => {
     try {
+      const authUser = getAuthenticatedUser(req);
+      if (!authUser || authUser.role !== 'admin') {
+        return reply.status(403).send({ error: 'Forbidden: Admin access required' });
+      }
+
       const { id } = req.params as { id: string };
       const { reason } = (req.body as { reason?: string }) || {};
 
@@ -429,7 +614,6 @@ export function buildBookingServer() {
 
       // Calculate refund using policy
       const eventDateStr = booking.event_date;
-      const totalAmount = parseInt(booking.total_amount_paise || '0', 10);
       const amountPaid = parseInt(booking.amount_paid_paise || '0', 10);
       const refundAmountPaise = calculateCancellationRefund(
         amountPaid,
@@ -450,18 +634,16 @@ export function buildBookingServer() {
         [booking.caterer_id, eventDateStr]
       );
 
-      const adminUserId = (req.headers['x-user-id'] as string) || null;
-
       await pgPool.query(
         `INSERT INTO order_svc.booking_status_history (booking_id, from_status, to_status, changed_by)
          VALUES ($1, $2, 'cancelled', $3)`,
-        [id, currentStatus, adminUserId]
+        [id, currentStatus, authUser.userId]
       );
 
       return reply.send({ success: true, booking: updateRes.rows[0], refundAmountPaise });
     } catch (err: any) {
-      console.error('POST /api/admin/bookings/:id/cancel error:', err);
-      return reply.status(500).send({ error: err.message });
+      req.log.error(err);
+      return reply.status(500).send({ error: 'Failed to cancel booking via admin' });
     }
   });
 
