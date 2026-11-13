@@ -56,6 +56,28 @@ export interface Caterer {
   updated_at: string;
 }
 
+export type MenuItemCategory =
+  | 'welcome_drink'
+  | 'starter'
+  | 'main'
+  | 'bread_rice'
+  | 'dessert'
+  | 'beverage'
+  | 'accompaniment';
+
+export interface MenuItem {
+  id: string;
+  caterer_id: string;
+  name: string;
+  category: MenuItemCategory;
+  price_paise: number;
+  is_veg: boolean;
+  description: string | null;
+  is_available: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface CatererDocument {
   id: string;
   caterer_id: string;

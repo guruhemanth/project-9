@@ -1,21 +1,21 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { useAuth } from '@/lib/auth/AuthContext';
-import { Star, MapPin, Check } from 'lucide-react';
+import { Star, MapPin, Check, Sparkles } from 'lucide-react';
 import { formatPaiseToINR } from '@/lib/formatters';
 import { BookingRequestModal } from './BookingRequestModal';
 import { AuthRequiredModal } from './AuthRequiredModal';
-import type { Caterer, Package, PackageItem, Booking } from '@/types/database';
+import { CustomComboBuilderModal } from './CustomComboBuilderModal';
+import type { Caterer, Package, PackageItem, Booking, MenuItem } from '@/types/database';
 
 export const CatererDetailView: React.FC = () => {
   const { id } = useParams<{ id: string }>();
   const { user } = useAuth();
 
-  // Data
-  const [caterer] = useState<Caterer>({
-    id: id || 'd0000000-0000-0000-0000-000000000001',
-    owner_id: 'c0000000-0000-0000-0000-000000000002',
-    business_name: 'Sri Venkateswara Catering Services',
+  const [caterer, setCaterer] = useState<Caterer>({
+    id: id || '22222222-2222-2222-2222-222222222201',
+    owner_id: '11111111-1111-1111-1111-111111111101',
+    business_name: 'Royal Feast Caterers',
     description:
       'Premier traditional wedding and event feast catering in Tirupati. Specializing in authentic South Indian, Andhra Brahmin feasts, plantain leaf service, and Rayalaseema specialties with high hygiene standards.',
     city: 'Tirupati',
@@ -27,54 +27,92 @@ export const CatererDetailView: React.FC = () => {
     rejection_reason: null,
     avg_rating: 4.8,
     review_count: 12,
+    min_guests: 50,
+    max_guests: 1500,
+    allows_custom_combo: true,
     created_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
   });
 
-  const [packages] = useState<(Package & { items: PackageItem[] })[]>([
-    {
-      id: 'e0000000-0000-0000-0000-000000000001',
-      caterer_id: 'd0000000-0000-0000-0000-000000000001',
-      name: 'Grand Tirupati Wedding Feast',
-      description: 'Full traditional 18-course meal served on fresh plantain leaf with Tirupati Laddu sweet.',
-      price_per_plate: 35000,
-      min_guests: 50,
-      max_guests: 1000,
-      is_veg: true,
-      is_active: true,
-      created_at: new Date().toISOString(),
-      items: [
-        { id: '1', package_id: 'e1', name: 'Poori & Potato Masala', category: 'starter' },
-        { id: '2', package_id: 'e1', name: 'Gutti Vankaya Curry', category: 'main' },
-        { id: '3', package_id: 'e1', name: 'Andhra Tomato Pappu with Ghee', category: 'main' },
-        { id: '4', package_id: 'e1', name: 'Authentic Sambar & Rasam', category: 'main' },
-        { id: '5', package_id: 'e1', name: 'Tirupati Style Besan Laddu', category: 'dessert' },
-        { id: '6', package_id: 'e1', name: 'Masala Buttermilk', category: 'beverage' },
-      ],
-    },
-    {
-      id: 'e0000000-0000-0000-0000-000000000002',
-      caterer_id: 'd0000000-0000-0000-0000-000000000001',
-      name: 'South Indian Breakfast & Tiffin Counter',
-      description: 'Live dosa counter, idli, vada, pongal with 3 chutneys and hot filter coffee.',
-      price_per_plate: 18000,
-      min_guests: 30,
-      max_guests: 500,
-      is_veg: true,
-      is_active: true,
-      created_at: new Date().toISOString(),
-      items: [
-        { id: '7', package_id: 'e2', name: 'Steamed Idli with Sambar', category: 'main' },
-        { id: '8', package_id: 'e2', name: 'Crispy Medu Vada', category: 'main' },
-        { id: '9', package_id: 'e2', name: 'Live Ghee Karam Dosa', category: 'starter' },
-        { id: '10', package_id: 'e2', name: 'Hot Filter Coffee', category: 'beverage' },
-      ],
-    },
-  ]);
+  const [packages, setPackages] = useState<(Package & { items: PackageItem[] })[]>([]);
+  const [menuItems, setMenuItems] = useState<MenuItem[]>([]);
+  const [, setLoading] = useState(true);
 
   const [selectedPackage, setSelectedPackage] = useState<Package | null>(null);
   const [authRequiredPkg, setAuthRequiredPkg] = useState<Package | null>(null);
+  const [showComboBuilder, setShowComboBuilder] = useState(false);
   const [bookingSuccess, setBookingSuccess] = useState(false);
+
+  useEffect(() => {
+    if (!id) return;
+    setLoading(true);
+    fetch(`/api/caterers/${id}`)
+      .then((res) => res.json())
+      .then((data) => {
+        if (data.caterer) {
+          setCaterer({
+            id: data.caterer.id,
+            owner_id: data.caterer.ownerId,
+            business_name: data.caterer.businessName,
+            description: data.caterer.description,
+            city: data.caterer.city,
+            state: data.caterer.state,
+            pincode: data.caterer.pincode,
+            address: data.caterer.address,
+            service_areas: data.caterer.serviceAreas || [],
+            cuisines: data.caterer.cuisines || [],
+            fssai_number: data.caterer.fssaiNumber || '10123000004567',
+            gst_number: data.caterer.gstNumber,
+            status: data.caterer.status,
+            rejection_reason: data.caterer.rejectionReason,
+            avg_rating: data.caterer.avgRating || 4.8,
+            review_count: data.caterer.reviewCount || 0,
+            min_guests: data.caterer.minGuests || 50,
+            max_guests: data.caterer.maxGuests || 2000,
+            allows_custom_combo: data.caterer.allowsCustomCombo ?? true,
+            created_at: data.caterer.createdAt,
+            updated_at: data.caterer.updatedAt || data.caterer.createdAt,
+          });
+
+          if (data.caterer.packages) {
+            setPackages(
+              data.caterer.packages.map((p: any) => ({
+                id: p.id,
+                caterer_id: data.caterer.id,
+                name: p.name,
+                description: p.description,
+                price_per_plate: p.pricePerPlatePaise,
+                min_guests: p.minGuests,
+                max_guests: p.maxGuests,
+                is_veg: true,
+                is_active: true,
+                created_at: new Date().toISOString(),
+                items: p.items || [],
+              }))
+            );
+          }
+
+          if (data.caterer.menuItems) {
+            setMenuItems(
+              data.caterer.menuItems.map((m: any) => ({
+                id: m.id,
+                caterer_id: data.caterer.id,
+                name: m.name,
+                category: m.category,
+                price_paise: m.pricePaise,
+                is_veg: m.isVeg,
+                description: m.description,
+                is_available: m.isAvailable,
+                created_at: new Date().toISOString(),
+                updated_at: new Date().toISOString(),
+              }))
+            );
+          }
+        }
+      })
+      .catch((err) => console.error('Failed to load caterer details:', err))
+      .finally(() => setLoading(false));
+  }, [id]);
 
   const handleRequestToBook = (pkg: Package) => {
     if (!user) {
@@ -145,6 +183,30 @@ export const CatererDetailView: React.FC = () => {
         </div>
       </div>
 
+      {/* Custom Feast Combo Builder Banner */}
+      {caterer.allows_custom_combo && menuItems.length > 0 && (
+        <div className="rounded-2xl border-2 border-dashed border-emerald-400 bg-gradient-to-r from-emerald-50 via-teal-50 to-white p-6 shadow-xs flex flex-col md:flex-row items-center justify-between gap-4">
+          <div className="space-y-1">
+            <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-600 px-3 py-0.5 text-xs font-bold text-white">
+              <Sparkles className="h-3.5 w-3.5" />
+              Build Your Own Menu
+            </span>
+            <h3 className="text-lg font-bold text-slate-900">Custom Combo Feast Builder</h3>
+            <p className="text-xs text-slate-600 max-w-xl">
+              Don't want fixed packages? Handpick your favorite starters, main curries, breads, and desserts from {caterer.business_name}'s {menuItems.length} kitchen recipes with instant live per-plate pricing!
+            </p>
+          </div>
+
+          <button
+            type="button"
+            onClick={() => setShowComboBuilder(true)}
+            className="rounded-xl bg-emerald-700 px-6 py-3 text-xs font-bold text-white shadow-md hover:bg-emerald-800 transition shrink-0"
+          >
+            Customize Feast Plate
+          </button>
+        </div>
+      )}
+
       {/* Packages Section */}
       <div className="space-y-4">
         <h2 className="text-lg font-bold text-slate-900">Available Catering Packages ({packages.length})</h2>
@@ -213,6 +275,31 @@ export const CatererDetailView: React.FC = () => {
           ))}
         </div>
       </div>
+
+      {/* Custom Combo Builder Modal */}
+      {showComboBuilder && (
+        <CustomComboBuilderModal
+          caterer={caterer}
+          menuItems={menuItems}
+          onClose={() => setShowComboBuilder(false)}
+          onProceedToBooking={(customCombo) => {
+            setShowComboBuilder(false);
+            const synthesizedPkg: Package = {
+              id: 'custom-combo-package',
+              caterer_id: caterer.id,
+              name: customCombo.comboName,
+              description: `Custom feast with ${customCombo.selectedItems.length} selected kitchen dishes.`,
+              price_per_plate: customCombo.pricePerPlatePaise,
+              min_guests: caterer.min_guests || 25,
+              max_guests: caterer.max_guests ?? null,
+              is_veg: customCombo.selectedItems.every((i) => i.is_veg),
+              is_active: true,
+              created_at: new Date().toISOString(),
+            };
+            handleRequestToBook(synthesizedPkg);
+          }}
+        />
+      )}
 
       {/* Booking Modal (Authenticated Only) */}
       {selectedPackage && user && (
