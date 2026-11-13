@@ -843,7 +843,7 @@ export function buildCatererServer() {
 
 if (process.env.NODE_ENV !== 'test') {
   const app = buildCatererServer();
-  const PORT = parseInt(process.env.PORT || '4002', 10);
+  const PORT = parseInt(process.env.CATERER_PORT || (process.env.PORT && process.env.PORT !== '8080' ? process.env.PORT : '4002'), 10);
   app.listen({ port: PORT, host: '0.0.0.0' }, (err, address) => {
     if (err) {
       console.error(err);

@@ -386,7 +386,17 @@ export const CustomerHome: React.FC = () => {
                       </div>
                     </div>
 
-                    <div className="mt-3 flex flex-wrap gap-1">
+                    {/* Custom Menu & Hardset Combos Badges */}
+                    <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
+                      <span className="rounded-full bg-emerald-50 border border-emerald-200 px-2 py-0.5 text-[10px] font-bold text-emerald-800">
+                        🍱 Hardset Combos
+                      </span>
+                      <span className="rounded-full bg-teal-50 border border-teal-200 px-2 py-0.5 text-[10px] font-bold text-teal-800">
+                        ✨ Custom Menu Builder
+                      </span>
+                    </div>
+
+                    <div className="mt-2.5 flex flex-wrap gap-1">
                       {caterer.cuisines.map((c) => (
                         <span
                           key={c}
