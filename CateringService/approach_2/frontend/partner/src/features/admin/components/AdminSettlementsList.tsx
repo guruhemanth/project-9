@@ -92,7 +92,7 @@ export const AdminSettlementsList: React.FC<Props> = ({
               <div className="space-y-1">
                 <div className="flex items-center gap-2">
                   <h4 className="font-bold text-sm text-slate-900">
-                    {s.catererBusinessName || 'Tirupati Caterer'}
+                    {s.catererBusinessName || 'Catering Partner'}
                   </h4>
                   {s.status === 'settled' ? (
                     <span className="inline-flex items-center gap-1 bg-teal-100 text-teal-800 px-2 py-0.5 rounded-full text-[10px] font-bold">

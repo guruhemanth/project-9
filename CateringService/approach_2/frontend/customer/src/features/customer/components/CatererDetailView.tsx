@@ -79,31 +79,11 @@ export const CatererDetailView: React.FC = () => {
   const { id } = useParams<{ id: string }>();
   const { user } = useAuth();
 
-  const [caterer, setCaterer] = useState<Caterer>({
-    id: id || '22222222-2222-2222-2222-222222222201',
-    owner_id: '11111111-1111-1111-1111-111111111101',
-    business_name: 'Royal Feast Caterers',
-    description:
-      'Premier traditional wedding and event feast catering. Specializing in authentic South Indian, Andhra Brahmin feasts, plantain leaf service, and traditional specialties with highest hygiene standards.',
-    city: 'Tirupati',
-    service_areas: ['Alipiri', 'MR Palli', 'Bhavani Nagar', 'Chandragiri', 'Renigunta'],
-    cuisines: ['andhra', 'south_indian', 'traditional_meals'],
-    fssai_number: '10123000004567',
-    gst_number: '37AAAAA0000A1Z5',
-    status: 'approved',
-    rejection_reason: null,
-    avg_rating: 4.8,
-    review_count: 12,
-    min_guests: 50,
-    max_guests: 1500,
-    allows_custom_combo: true,
-    created_at: new Date().toISOString(),
-    updated_at: new Date().toISOString(),
-  });
-
+  const [caterer, setCaterer] = useState<Caterer | null>(null);
   const [packages, setPackages] = useState<(Package & { items: PackageItem[] })[]>([]);
   const [menuItems, setMenuItems] = useState<MenuItem[]>([]);
-  const [, setLoading] = useState(true);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   // Party size / number of people for service
   const [serviceGuests, setServiceGuests] = useState<number>(50);
@@ -136,10 +116,18 @@ export const CatererDetailView: React.FC = () => {
   const [bookingSuccess, setBookingSuccess] = useState(false);
 
   useEffect(() => {
-    if (!id) return;
+    if (!id) {
+      setLoading(false);
+      setError('No caterer ID specified');
+      return;
+    }
     setLoading(true);
+    setError(null);
     fetch(`/api/caterers/${id}`)
-      .then((res) => res.json())
+      .then((res) => {
+        if (!res.ok) throw new Error('Caterer not found');
+        return res.json();
+      })
       .then((data) => {
         if (data.caterer) {
           const loadedCaterer: Caterer = {
@@ -153,20 +141,20 @@ export const CatererDetailView: React.FC = () => {
             address: data.caterer.address,
             service_areas: data.caterer.serviceAreas || [],
             cuisines: data.caterer.cuisines || [],
-            fssai_number: data.caterer.fssaiNumber || '10123000004567',
+            fssai_number: data.caterer.fssaiNumber || 'Pending Verification',
             gst_number: data.caterer.gstNumber,
             status: data.caterer.status,
             rejection_reason: data.caterer.rejectionReason,
-            avg_rating: data.caterer.avgRating || 4.8,
-            review_count: data.caterer.reviewCount || 0,
-            min_guests: data.caterer.minGuests || 50,
+            avg_rating: Number(data.caterer.avgRating ?? data.caterer.avg_rating ?? 0),
+            review_count: Number(data.caterer.reviewCount ?? data.caterer.review_count ?? 0),
+            min_guests: data.caterer.minGuests || 25,
             max_guests: data.caterer.maxGuests || 2000,
             allows_custom_combo: data.caterer.allowsCustomCombo ?? true,
             created_at: data.caterer.createdAt,
             updated_at: data.caterer.updatedAt || data.caterer.createdAt,
           };
           setCaterer(loadedCaterer);
-          setServiceGuests(Math.max(50, loadedCaterer.min_guests || 25));
+          setServiceGuests(Math.max(25, loadedCaterer.min_guests || 25));
 
           if (data.caterer.packages) {
             setPackages(
@@ -202,9 +190,15 @@ export const CatererDetailView: React.FC = () => {
               }))
             );
           }
+        } else {
+          throw new Error('Caterer profile not found');
         }
       })
-      .catch((err) => console.error('Failed to load caterer details:', err))
+      .catch((err) => {
+        console.error('Failed to load caterer details:', err);
+        setError('Unable to load caterer profile.');
+        setCaterer(null);
+      })
       .finally(() => setLoading(false));
   }, [id]);
 
@@ -287,8 +281,8 @@ export const CatererDetailView: React.FC = () => {
   const customTotalCostPaise = customPerPlatePaise * serviceGuests;
   const customAdvancePaise = Math.round(customTotalCostPaise * 0.25);
 
-  const isGuestsBelowMin = serviceGuests < (caterer.min_guests || 25);
-  const isGuestsAboveMax = Boolean(caterer.max_guests && serviceGuests > caterer.max_guests);
+  const isGuestsBelowMin = caterer ? serviceGuests < (caterer.min_guests || 25) : false;
+  const isGuestsAboveMax = caterer ? Boolean(caterer.max_guests && serviceGuests > caterer.max_guests) : false;
 
   // Filtered dishes for the catalog/dishes view
   const filteredCatalogDishes = menuItems.filter((dish) => {
@@ -325,6 +319,51 @@ export const CatererDetailView: React.FC = () => {
     'dessert',
     'beverage',
   ];
+
+  if (loading) {
+    return (
+      <div className="space-y-6 animate-pulse pb-24">
+        <div>
+          <Link to="/" className="text-xs font-semibold text-emerald-700 hover:text-emerald-800 transition">
+            &larr; Back to all caterers
+          </Link>
+        </div>
+        <div className="rounded-2xl border border-slate-200 bg-white p-6 space-y-4">
+          <div className="h-4 w-32 bg-slate-200 rounded" />
+          <div className="h-8 w-72 bg-slate-200 rounded" />
+          <div className="h-4 w-full max-w-xl bg-slate-200 rounded" />
+        </div>
+        <div className="rounded-2xl border border-slate-200 bg-white p-6 h-48" />
+      </div>
+    );
+  }
+
+  if (error || !caterer) {
+    return (
+      <div className="space-y-6 pb-24">
+        <div>
+          <Link to="/" className="text-xs font-semibold text-emerald-700 hover:text-emerald-800 transition">
+            &larr; Back to all caterers
+          </Link>
+        </div>
+        <div className="rounded-2xl border border-dashed border-slate-300 bg-white p-12 text-center space-y-3 shadow-xs">
+          <UtensilsCrossed className="mx-auto h-12 w-12 text-slate-300" />
+          <h3 className="text-lg font-bold text-slate-900">Catering Service Not Found</h3>
+          <p className="text-xs text-slate-500 max-w-md mx-auto">
+            The caterer profile you are looking for does not exist or has not yet been approved for public bookings.
+          </p>
+          <div className="pt-2">
+            <Link
+              to="/"
+              className="inline-flex items-center gap-1.5 rounded-xl bg-emerald-700 px-4 py-2 text-xs font-bold text-white shadow-xs hover:bg-emerald-800 transition"
+            >
+              Browse All Catering Services &rarr;
+            </Link>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6 pb-24">
@@ -375,7 +414,9 @@ export const CatererDetailView: React.FC = () => {
               <div className="flex items-center gap-1 font-bold text-amber-600">
                 <Star className="h-4 w-4 fill-current" />
                 <span>
-                  {caterer.avg_rating} ({caterer.review_count} reviews)
+                  {caterer.review_count > 0
+                    ? `${Number(caterer.avg_rating).toFixed(1)} (${caterer.review_count} ${caterer.review_count === 1 ? 'review' : 'reviews'})`
+                    : 'New Caterer (No reviews yet)'}
                 </span>
               </div>
               <div className="flex items-center gap-1">

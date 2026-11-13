@@ -12,15 +12,15 @@ interface Props {
 export const CatererOnboardingForm: React.FC<Props> = ({ ownerId, onSuccess }) => {
   const [businessName, setBusinessName] = useState('');
   const [description, setDescription] = useState('');
-  const [state, setState] = useState('Andhra Pradesh');
-  const [city, setCity] = useState('Tirupati');
+  const [state, setState] = useState<string>(INDIAN_STATES_AND_UTS[0] || 'Andhra Pradesh');
+  const [city, setCity] = useState('');
   const [pincode, setPincode] = useState('');
   const [address, setAddress] = useState('');
   const [fssaiNumber, setFssaiNumber] = useState('');
   const [gstNumber, setGstNumber] = useState('');
-  const [serviceAreas, setServiceAreas] = useState<string[]>(['Alipiri', 'MR Palli', 'Chandragiri']);
+  const [serviceAreas, setServiceAreas] = useState<string[]>([]);
   const [newArea, setNewArea] = useState('');
-  const [cuisines, setCuisines] = useState<string[]>(['south_indian', 'traditional_meals']);
+  const [cuisines, setCuisines] = useState<string[]>([]);
   const [newCuisine, setNewCuisine] = useState('');
   const [fssaiDocName, setFssaiDocName] = useState('');
   const [idDocName, setIdDocName] = useState('');

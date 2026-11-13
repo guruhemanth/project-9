@@ -12,6 +12,7 @@ interface PartnerChatDrawerProps {
     venueAddress?: string;
     eventDate?: string;
     guestCount?: number;
+    city?: string;
   };
   onClose: () => void;
 }
@@ -115,24 +116,11 @@ export const PartnerChatDrawer: React.FC<PartnerChatDrawerProps> = ({
         senderRole: 'caterer',
       };
 
-      try {
-        const res = await apiFetch<{ message: ChatMessage }>(`/api/chat/threads/${thread.id}/messages`, {
-          method: 'POST',
-          body: JSON.stringify(payload),
-        });
-        setMessages((prev) => [...prev, res.message]);
-      } catch (postErr) {
-        const mockMsg: ChatMessage = {
-          id: `msg-${Date.now()}`,
-          threadId: thread.id,
-          senderId: user?.id || 'caterer-local',
-          senderRole: 'caterer',
-          message: text,
-          isRead: false,
-          createdAt: new Date().toISOString(),
-        };
-        setMessages((prev) => [...prev, mockMsg]);
-      }
+      const res = await apiFetch<{ message: ChatMessage }>(`/api/chat/threads/${thread.id}/messages`, {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      });
+      setMessages((prev) => [...prev, res.message]);
 
       setInputText('');
     } catch (err: any) {
@@ -176,7 +164,7 @@ export const PartnerChatDrawer: React.FC<PartnerChatDrawerProps> = ({
         {bookingSummary && (
           <div className="bg-amber-50 px-4 py-2 border-b border-amber-100 flex items-center justify-between text-xs text-amber-900">
             <span className="font-medium truncate max-w-[240px]">
-              {bookingSummary.venueAddress || 'Tirupati Event Venue'} ({bookingSummary.guestCount || 0} guests)
+              {bookingSummary.venueAddress || (bookingSummary.city ? `${bookingSummary.city} Event Venue` : 'Event Venue')} ({bookingSummary.guestCount || 0} guests)
             </span>
             <span className="text-[11px] text-amber-700 flex items-center gap-1">
               <Clock className="h-3 w-3" /> Host Coordination

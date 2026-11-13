@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { Link } from 'react-router-dom';
 import { Search, MapPin, Star, Utensils, Globe, ChevronDown, Check, Users } from 'lucide-react';
 import { formatPaiseToINR } from '@/lib/formatters';
@@ -17,6 +17,14 @@ export const CustomerHome: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [showCityPicker, setShowCityPicker] = useState(false);
+
+  const popularCities = useMemo(() => {
+    const list = ['All India', 'Tirupati', 'Bengaluru', 'Hyderabad', 'Chennai', 'Mumbai', 'Delhi', 'Lucknow'];
+    if (selectedCity && !list.includes(selectedCity)) {
+      return [...list, selectedCity];
+    }
+    return list;
+  }, [selectedCity]);
 
   const handleSelectCity = (city: string) => {
     setSelectedCity(city);
@@ -50,8 +58,8 @@ export const CustomerHome: React.FC = () => {
             owner_id: c.ownerId || c.owner_id,
             business_name: c.businessName || c.business_name,
             description: c.description,
-            city: c.city || 'Tirupati',
-            state: c.state || 'Andhra Pradesh',
+            city: c.city || 'Pan-India',
+            state: c.state || 'India',
             pincode: c.pincode || null,
             address: c.address || null,
             service_areas: c.serviceAreas || c.service_areas || [],
@@ -60,8 +68,8 @@ export const CustomerHome: React.FC = () => {
             gst_number: c.gstNumber || c.gst_number,
             status: c.status,
             rejection_reason: c.rejectionReason || null,
-            avg_rating: c.avgRating !== undefined ? c.avgRating : 4.8,
-            review_count: c.reviewCount !== undefined ? c.reviewCount : 12,
+            avg_rating: Number(c.avgRating ?? (c.avg_rating ?? 0)),
+            review_count: Number(c.reviewCount ?? (c.review_count ?? 0)),
             startingPricePaise: minPrice,
             created_at: c.createdAt || new Date().toISOString(),
             updated_at: c.updatedAt || new Date().toISOString(),
@@ -124,7 +132,7 @@ export const CustomerHome: React.FC = () => {
           {/* Quick Location Pills */}
           <div className="flex flex-wrap items-center gap-1.5 shrink-0">
             <span className="text-[11px] text-emerald-200 font-semibold mr-1">Locations:</span>
-            {['All India', 'Tirupati', 'Bengaluru', 'Hyderabad', 'Chennai'].map((city) => (
+            {popularCities.map((city: string) => (
               <button
                 key={city}
                 onClick={() => handleSelectCity(city)}
@@ -361,7 +369,7 @@ export const CustomerHome: React.FC = () => {
                       <div className="flex items-center gap-1 text-xs font-bold text-amber-600">
                         <Star className="h-3.5 w-3.5 fill-current" />
                         <span>
-                          {caterer.avg_rating} ({caterer.review_count})
+                          {caterer.review_count > 0 ? `${Number(caterer.avg_rating).toFixed(1)} (${caterer.review_count})` : 'New'}
                         </span>
                       </div>
                     </div>

@@ -118,8 +118,8 @@ export const BookingRequestModal: React.FC<Props> = ({
         eventTime: eventTime.length === 5 ? `${eventTime}:00` : eventTime,
         guestCount,
         venueAddress: venueAddress.trim(),
-        city: caterer.city || 'Tirupati',
-        state: caterer.state || 'Andhra Pradesh',
+        city: caterer.city || '',
+        state: caterer.state || '',
         pincode: caterer.pincode || null,
         specialRequests: specialRequests.trim() || null,
       };

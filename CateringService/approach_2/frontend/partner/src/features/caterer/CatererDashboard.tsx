@@ -161,10 +161,18 @@ export const CatererDashboard: React.FC = () => {
     );
   }
 
+  if (!user?.id) {
+    return (
+      <div className="flex flex-col items-center justify-center p-16 space-y-3 text-center">
+        <p className="text-sm font-semibold text-slate-700">Please sign in to access your caterer dashboard.</p>
+      </div>
+    );
+  }
+
   if (!caterer) {
     return (
       <CatererOnboardingForm
-        ownerId={user?.id || 'mock-owner'}
+        ownerId={user.id}
         onSuccess={(created) => setCaterer(created)}
       />
     );

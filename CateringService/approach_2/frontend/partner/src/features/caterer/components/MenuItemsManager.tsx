@@ -154,7 +154,7 @@ export const MenuItemsManager: React.FC<MenuItemsManagerProps> = ({ catererId })
                 required
                 value={name}
                 onChange={(e) => setName(e.target.value)}
-                placeholder="e.g. Tirupati Ghee Pongal"
+                placeholder="e.g. Special Ghee Pongal / Shahi Paneer"
                 className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs focus:ring-1 focus:ring-amber-500 focus:outline-none"
               />
             </div>

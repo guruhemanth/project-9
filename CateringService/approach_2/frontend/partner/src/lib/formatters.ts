@@ -1,5 +1,5 @@
 /**
- * Currency and format helpers for CaterConnect (India / Tirupati)
+ * Currency and format helpers for CaterConnect (Pan-India)
  * Non-negotiable rule: Money is stored as integer paise, never floats.
  * Display in INR with Intl.NumberFormat.
  */

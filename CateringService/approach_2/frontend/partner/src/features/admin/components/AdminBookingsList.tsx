@@ -139,7 +139,7 @@ export const AdminBookingsList: React.FC<Props> = ({
                     Host: <b>{b.customerName || 'Customer'}</b> ({b.customerPhone || 'No Phone'})
                   </span>
                   <span>
-                    Caterer: <b>{b.catererBusinessName || 'Tirupati Caterer'}</b>
+                    Caterer: <b>{b.catererBusinessName || 'Catering Partner'}</b>
                   </span>
                   <span>
                     Package: <b>{b.packageName || 'Feast'}</b> ({b.guestCount} guests)
