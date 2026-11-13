@@ -1,7 +1,7 @@
 import React from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '@/lib/auth/AuthContext';
-import { Utensils, LogOut, User as UserIcon, Calendar } from 'lucide-react';
+import { Utensils, LogOut, User as UserIcon, Calendar, MessageSquare } from 'lucide-react';
 
 export const Navbar: React.FC = () => {
   const { user, profile, signOut } = useAuth();
@@ -37,13 +37,22 @@ export const Navbar: React.FC = () => {
           </Link>
 
           {user && (
-            <Link
-              to="/customer/bookings"
-              className="flex items-center gap-1.5 text-xs sm:text-sm font-semibold text-slate-600 hover:text-emerald-700 transition"
-            >
-              <Calendar className="h-4 w-4 text-emerald-600" />
-              <span>My Bookings</span>
-            </Link>
+            <>
+              <Link
+                to="/customer/bookings"
+                className="flex items-center gap-1.5 text-xs sm:text-sm font-semibold text-slate-600 hover:text-emerald-700 transition"
+              >
+                <Calendar className="h-4 w-4 text-emerald-600" />
+                <span>My Bookings</span>
+              </Link>
+              <Link
+                to="/customer/messages"
+                className="flex items-center gap-1.5 text-xs sm:text-sm font-semibold text-slate-600 hover:text-emerald-700 transition"
+              >
+                <MessageSquare className="h-4 w-4 text-emerald-600" />
+                <span>Messages</span>
+              </Link>
+            </>
           )}
 
           {user ? (
