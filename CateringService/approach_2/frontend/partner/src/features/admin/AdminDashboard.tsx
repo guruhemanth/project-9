@@ -401,6 +401,7 @@ export const AdminDashboard: React.FC = () => {
       {activeTab === 'settings' && (
         <CommissionSettingsCard
           initialCommission={commissionPct}
+          caterers={caterers}
           onUpdated={(newVal) => setCommissionPct(newVal)}
         />
       )}
