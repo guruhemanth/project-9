@@ -201,8 +201,8 @@ export const CustomerHome: React.FC = () => {
           {/* Right: Guest Count & Cuisines Strip */}
           <div className="flex flex-wrap items-center gap-3 w-full md:w-auto">
             {/* Quick Guest Count Filter */}
-            <div className="flex items-center gap-1 bg-slate-100/90 p-1 rounded-xl">
-              <span className="flex items-center gap-1 text-[11px] font-bold text-slate-500 px-1.5">
+            <div className="flex items-center gap-1.5 bg-slate-100/90 p-1 rounded-xl border border-slate-200/60 shadow-2xs">
+              <span className="flex items-center gap-1 text-[11px] font-bold text-slate-500 px-1.5 whitespace-nowrap">
                 <Users className="h-3 w-3 text-emerald-600" />
                 Guests:
               </span>
@@ -226,6 +226,28 @@ export const CustomerHome: React.FC = () => {
                   {g.label}
                 </button>
               ))}
+
+              {/* Direct Custom People Count Input */}
+              <div className="flex items-center gap-1 pl-1.5 ml-0.5 border-l border-slate-300/80">
+                <input
+                  type="number"
+                  min="1"
+                  max="50000"
+                  placeholder="Custom #"
+                  value={guestCountFilter && ![50, 100, 250, 500].includes(guestCountFilter) ? guestCountFilter : ''}
+                  onChange={(e) => {
+                    const raw = e.target.value;
+                    if (!raw) {
+                      setGuestCountFilter(null);
+                    } else {
+                      const v = parseInt(raw, 10);
+                      setGuestCountFilter(isNaN(v) ? null : Math.max(1, v));
+                    }
+                  }}
+                  className="w-20 rounded-md border border-slate-200 bg-white px-2 py-0.5 text-xs font-bold text-emerald-950 placeholder:text-slate-400 focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500 text-center shadow-inner"
+                  title="Enter exact customized number of guests"
+                />
+              </div>
             </div>
 
             {/* Cuisines Horizontal Menu Strip */}

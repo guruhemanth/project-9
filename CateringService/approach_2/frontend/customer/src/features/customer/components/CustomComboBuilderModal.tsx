@@ -238,32 +238,56 @@ export const CustomComboBuilderModal: React.FC<CustomComboBuilderModalProps> = (
               {/* Guest Count Selector */}
               <div className="rounded-xl border border-slate-200 bg-white p-3.5">
                 <div className="flex items-center justify-between mb-1.5">
-                  <label className="text-xs font-semibold text-slate-700">Total Guest Count</label>
-                  <span className="text-[10px] text-slate-400">Min: {minGuests} guests</span>
+                  <label className="text-xs font-semibold text-slate-700">Enter Number of Guests</label>
+                  <span className="text-[10px] text-slate-400">Min: {minGuests} • Max: {maxGuests}</span>
                 </div>
                 <div className="flex items-center gap-2">
                   <button
                     type="button"
-                    onClick={() => setGuestCount((g) => Math.max(minGuests, g - 25))}
+                    onClick={() => setGuestCount((g) => Math.max(minGuests, (g || minGuests) - 25))}
                     className="h-8 w-8 rounded-lg border border-slate-200 bg-slate-50 flex items-center justify-center text-slate-600 hover:bg-slate-100"
+                    title="Decrease 25 guests"
                   >
                     <Minus className="h-3.5 w-3.5" />
                   </button>
                   <input
                     type="number"
-                    min={minGuests}
+                    min="1"
                     max={maxGuests}
-                    value={guestCount}
-                    onChange={(e) => setGuestCount(parseInt(e.target.value, 10) || minGuests)}
+                    value={guestCount || ''}
+                    onChange={(e) => {
+                      const v = parseInt(e.target.value, 10);
+                      setGuestCount(isNaN(v) ? 0 : v);
+                    }}
+                    placeholder={`e.g. ${minGuests}`}
                     className="flex-1 text-center font-bold text-sm rounded-lg border border-slate-200 py-1.5 focus:ring-1 focus:ring-emerald-500 focus:outline-none"
+                    title="Enter custom number of guests"
                   />
                   <button
                     type="button"
-                    onClick={() => setGuestCount((g) => Math.min(maxGuests, g + 25))}
+                    onClick={() => setGuestCount((g) => Math.min(maxGuests, (g || 0) + 25))}
                     className="h-8 w-8 rounded-lg border border-slate-200 bg-slate-50 flex items-center justify-center text-slate-600 hover:bg-slate-100"
+                    title="Increase 25 guests"
                   >
                     <Plus className="h-3.5 w-3.5" />
                   </button>
+                </div>
+                {/* Quick Presets */}
+                <div className="mt-1.5 flex flex-wrap gap-1">
+                  {[50, 100, 200, 350, 500].map((preset) => (
+                    <button
+                      key={preset}
+                      type="button"
+                      onClick={() => setGuestCount(preset)}
+                      className={`rounded px-1.5 py-0.5 text-[10px] font-semibold transition ${
+                        guestCount === preset
+                          ? 'bg-emerald-700 text-white'
+                          : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                      }`}
+                    >
+                      {preset}
+                    </button>
+                  ))}
                 </div>
               </div>
 

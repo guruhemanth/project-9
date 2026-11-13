@@ -234,19 +234,53 @@ export const CatererDetailView: React.FC = () => {
           </div>
 
           {/* Guest Count Controls */}
-          <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center gap-3">
+            {/* Direct Custom People Input Box */}
+            <div className="flex items-center gap-2 bg-white border border-emerald-300 rounded-xl px-3 py-1.5 shadow-2xs">
+              <label htmlFor="custom-service-guests" className="text-xs font-bold text-slate-700 whitespace-nowrap">
+                Enter Custom Count:
+              </label>
+              <input
+                id="custom-service-guests"
+                type="number"
+                min="1"
+                max="50000"
+                value={serviceGuests || ''}
+                onChange={(e) => {
+                  const val = parseInt(e.target.value, 10);
+                  setServiceGuests(isNaN(val) ? 0 : Math.max(1, val));
+                }}
+                placeholder="e.g. 175"
+                className="w-20 text-center font-extrabold text-sm text-emerald-950 bg-emerald-50/70 border border-emerald-300 focus:outline-none focus:ring-2 focus:ring-emerald-500 rounded-lg py-1 px-1.5"
+                title="Enter custom party size / number of people"
+              />
+              <span className="text-xs text-slate-500 font-semibold">people</span>
+            </div>
+
+            {/* Stepper with directly editable center input */}
             <div className="flex items-center rounded-xl border border-slate-200 bg-white p-1 shadow-2xs">
               <button
                 type="button"
-                onClick={() => setServiceGuests((g) => Math.max(10, g - 25))}
+                onClick={() => setServiceGuests((g) => Math.max(1, g - 25))}
                 className="h-8 w-8 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-sm flex items-center justify-center transition"
                 title="Decrease 25 guests"
               >
                 -
               </button>
-              <div className="px-4 text-center">
-                <span className="text-base font-extrabold text-slate-900">{serviceGuests}</span>
-                <span className="text-[10px] text-slate-400 block font-semibold uppercase">Guests</span>
+              <div className="px-2 text-center flex flex-col items-center">
+                <input
+                  type="number"
+                  min="1"
+                  max="50000"
+                  value={serviceGuests || ''}
+                  onChange={(e) => {
+                    const val = parseInt(e.target.value, 10);
+                    setServiceGuests(isNaN(val) ? 0 : Math.max(1, val));
+                  }}
+                  className="w-16 text-center text-base font-extrabold text-slate-900 focus:outline-none focus:ring-1 focus:ring-emerald-500 rounded bg-transparent"
+                  title="Directly edit number of guests"
+                />
+                <span className="text-[9px] text-slate-400 block font-semibold uppercase leading-none">Guests</span>
               </div>
               <button
                 type="button"
@@ -259,7 +293,7 @@ export const CatererDetailView: React.FC = () => {
             </div>
 
             {/* Quick Presets */}
-            <div className="hidden sm:flex items-center gap-1.5">
+            <div className="hidden lg:flex items-center gap-1.5">
               {[50, 100, 250, 500, 1000].map((preset) => (
                 <button
                   key={preset}

@@ -245,11 +245,15 @@ export const BookingRequestModal: React.FC<Props> = ({
               <input
                 type="number"
                 required
-                min={Math.max(packageItem?.min_guests || 10, caterer.min_guests || 25)}
+                min={1}
                 max={caterer.max_guests || packageItem?.max_guests || undefined}
-                value={guestCount}
-                onChange={(e) => setGuestCount(Math.max(1, Number(e.target.value)))}
+                value={guestCount || ''}
+                onChange={(e) => {
+                  const val = parseInt(e.target.value, 10);
+                  setGuestCount(isNaN(val) ? 0 : val);
+                }}
                 className="w-full rounded-lg border border-slate-300 py-2 px-3 text-xs focus:border-emerald-500 focus:outline-none font-bold text-slate-900"
+                placeholder="Enter custom number of guests"
               />
             </div>
             {/* Quick Guest Count Presets */}
