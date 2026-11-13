@@ -74,6 +74,7 @@ export interface MenuItem {
   is_veg: boolean;
   description: string | null;
   is_available: boolean;
+  image_url?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -96,6 +97,7 @@ export interface Package {
   max_guests: number | null;
   is_veg: boolean;
   is_active: boolean;
+  image_url?: string | null;
   created_at: string;
 }
 
@@ -104,6 +106,7 @@ export interface PackageItem {
   package_id: string;
   name: string;
   category: 'starter' | 'main' | 'dessert' | 'beverage';
+  image_url?: string | null;
 }
 
 export interface Addon {

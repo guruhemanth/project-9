@@ -354,44 +354,53 @@ export const CustomComboBuilderModal: React.FC<CustomComboBuilderModalProps> = (
                   <div
                     key={item.id}
                     onClick={() => toggleItem(item.id)}
-                    className={`rounded-xl border p-3 cursor-pointer transition flex items-start justify-between gap-3 ${
+                    className={`rounded-xl border p-2.5 sm:p-3 cursor-pointer transition flex items-center justify-between gap-3 ${
                       isSelected
-                        ? 'border-emerald-600 bg-emerald-50/60 shadow-xs'
+                        ? 'border-emerald-600 bg-emerald-50/60 shadow-xs ring-1 ring-emerald-500/20'
                         : 'border-slate-200 hover:border-slate-300 bg-white'
                     }`}
                   >
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-1.5">
+                    <div className="flex items-center gap-2.5 min-w-0 flex-1">
+                      {/* Dish Photo Thumbnail */}
+                      <div className="relative h-14 w-14 sm:h-16 sm:w-16 rounded-lg bg-slate-100 overflow-hidden shrink-0 border border-slate-200/80">
+                        {item.image_url ? (
+                          <img src={item.image_url} alt={item.name} className="h-full w-full object-cover" />
+                        ) : (
+                          <div className="h-full w-full flex items-center justify-center text-slate-300">
+                            <Utensils className="h-5 w-5" />
+                          </div>
+                        )}
                         <span
-                          className={`h-2.5 w-2.5 rounded-full shrink-0 ${
+                          className={`absolute bottom-1 right-1 h-2 w-2 rounded-full border border-white ${
                             item.is_veg ? 'bg-emerald-600' : 'bg-red-600'
                           }`}
                           title={item.is_veg ? 'Pure Vegetarian' : 'Non-Vegetarian'}
                         />
-                        <h4 className="font-bold text-xs text-slate-900 truncate">{item.name}</h4>
                       </div>
-                      <span className="text-[10px] text-slate-500 block mt-0.5">
-                        {CATEGORY_NAMES[item.category] || item.category}
-                      </span>
-                      {item.description && (
-                        <p className="text-[11px] text-slate-500 mt-1 line-clamp-1">{item.description}</p>
-                      )}
+
+                      <div className="min-w-0 flex-1">
+                        <h4 className="font-bold text-xs text-slate-900 truncate">{item.name}</h4>
+                        <span className="text-[10px] text-slate-500 block mt-0.5">
+                          {CATEGORY_NAMES[item.category] || item.category}
+                        </span>
+                        {item.description && (
+                          <p className="text-[11px] text-slate-500 mt-0.5 line-clamp-1 leading-snug">{item.description}</p>
+                        )}
+                        <span className="font-bold text-xs text-emerald-800 mt-1 inline-block">
+                          +{formatPaiseToINR(item.price_paise)}
+                        </span>
+                      </div>
                     </div>
 
-                    <div className="text-right shrink-0">
-                      <span className="font-bold text-xs text-emerald-800 block">
-                        +{formatPaiseToINR(item.price_paise)}
-                      </span>
-                      <div className="mt-2 flex justify-end">
-                        <div
-                          className={`h-5 w-5 rounded-md flex items-center justify-center border transition ${
-                            isSelected
-                              ? 'bg-emerald-600 border-emerald-600 text-white'
-                              : 'border-slate-300 text-transparent'
-                          }`}
-                        >
-                          <Check className="h-3.5 w-3.5" />
-                        </div>
+                    <div className="shrink-0 pl-1">
+                      <div
+                        className={`h-5 w-5 rounded-md flex items-center justify-center border transition ${
+                          isSelected
+                            ? 'bg-emerald-600 border-emerald-600 text-white'
+                            : 'border-slate-300 text-transparent'
+                        }`}
+                      >
+                        <Check className="h-3.5 w-3.5" />
                       </div>
                     </div>
                   </div>

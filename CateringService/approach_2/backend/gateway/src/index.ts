@@ -51,7 +51,7 @@ export function buildGatewayServer() {
     logger: {
       redact: loggerRedactionConfig,
     },
-    bodyLimit: 1048576, // 1MB payload limit
+    bodyLimit: 15728640, // 15MB payload limit for dish photos and media
     connectionTimeout: 10000, // 10s
     requestTimeout: 15000, // 15s
   });

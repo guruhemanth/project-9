@@ -21,7 +21,7 @@ export function buildCatererServer() {
     logger: {
       redact: loggerRedactionConfig,
     },
-    bodyLimit: 1048576,
+    bodyLimit: 15728640, // 15MB payload limit for dish photos and media
     connectionTimeout: 10000,
     requestTimeout: 15000,
   });
@@ -166,20 +166,21 @@ export function buildCatererServer() {
   async function getFullCatererProfile(c: any) {
     const id = c.id;
     const packagesRes = await pgPool.query(
-      `SELECT p.id, p.name, p.description, p.price_per_plate_paise, p.min_guests, p.max_guests, p.is_active,
+      `SELECT p.id, p.name, p.description, p.price_per_plate_paise, p.min_guests, p.max_guests, p.is_active, p.image_url,
         COALESCE(
           json_agg(
             json_build_object(
               'id', pi.id,
               'name', pi.name,
-              'category', pi.category
+              'category', pi.category,
+              'image_url', pi.image_url
             )
           ) FILTER (WHERE pi.id IS NOT NULL), '[]'
         ) as items
        FROM caterer_svc.packages p
        LEFT JOIN caterer_svc.package_items pi ON p.id = pi.package_id
        WHERE p.caterer_id = $1
-       GROUP BY p.id, p.name, p.description, p.price_per_plate_paise, p.min_guests, p.max_guests, p.is_active
+       GROUP BY p.id, p.name, p.description, p.price_per_plate_paise, p.min_guests, p.max_guests, p.is_active, p.image_url
        ORDER BY p.price_per_plate_paise ASC`,
       [id]
     );
@@ -194,11 +195,13 @@ export function buildCatererServer() {
       max_guests: row.max_guests,
       is_veg: true,
       is_active: row.is_active,
+      image_url: row.image_url,
+      imageUrl: row.image_url,
       items: row.items,
     }));
 
     const menuItemsRes = await pgPool.query(
-      `SELECT id, name, category, price_paise, is_veg, description, is_available
+      `SELECT id, name, category, price_paise, is_veg, description, is_available, image_url
        FROM caterer_svc.menu_items
        WHERE caterer_id = $1
        ORDER BY category ASC, name ASC`,
@@ -210,9 +213,14 @@ export function buildCatererServer() {
       name: row.name,
       category: row.category,
       pricePaise: row.price_paise,
+      price_paise: row.price_paise,
       isVeg: row.is_veg,
+      is_veg: row.is_veg,
       description: row.description,
       isAvailable: row.is_available,
+      is_available: row.is_available,
+      imageUrl: row.image_url,
+      image_url: row.image_url,
     }));
 
     return {
@@ -324,20 +332,21 @@ export function buildCatererServer() {
     }
 
     const packagesRes = await pgPool.query(
-      `SELECT p.id, p.name, p.description, p.price_per_plate_paise, p.min_guests, p.max_guests,
+      `SELECT p.id, p.name, p.description, p.price_per_plate_paise, p.min_guests, p.max_guests, p.is_active, p.image_url,
         COALESCE(
           json_agg(
             json_build_object(
               'id', pi.id,
               'name', pi.name,
-              'category', pi.category
+              'category', pi.category,
+              'image_url', pi.image_url
             )
           ) FILTER (WHERE pi.id IS NOT NULL), '[]'
         ) as items
        FROM caterer_svc.packages p
        LEFT JOIN caterer_svc.package_items pi ON p.id = pi.package_id
        WHERE p.caterer_id = $1
-       GROUP BY p.id, p.name, p.description, p.price_per_plate_paise, p.min_guests, p.max_guests
+       GROUP BY p.id, p.name, p.description, p.price_per_plate_paise, p.min_guests, p.max_guests, p.is_active, p.image_url
        ORDER BY p.price_per_plate_paise ASC`,
       [id]
     );
@@ -347,13 +356,19 @@ export function buildCatererServer() {
       name: row.name,
       description: row.description,
       pricePerPlatePaise: row.price_per_plate_paise,
+      price_per_plate: row.price_per_plate_paise,
       minGuests: row.min_guests,
+      min_guests: row.min_guests,
       maxGuests: row.max_guests,
+      max_guests: row.max_guests,
+      is_active: row.is_active,
+      imageUrl: row.image_url,
+      image_url: row.image_url,
       items: row.items,
     }));
 
     const menuItemsRes = await pgPool.query(
-      `SELECT id, name, category, price_paise, is_veg, description, is_available
+      `SELECT id, name, category, price_paise, is_veg, description, is_available, image_url
        FROM caterer_svc.menu_items
        WHERE caterer_id = $1
        ORDER BY category ASC, name ASC`,
@@ -365,9 +380,14 @@ export function buildCatererServer() {
       name: row.name,
       category: row.category,
       pricePaise: row.price_paise,
+      price_paise: row.price_paise,
       isVeg: row.is_veg,
+      is_veg: row.is_veg,
       description: row.description,
       isAvailable: row.is_available,
+      is_available: row.is_available,
+      imageUrl: row.image_url,
+      image_url: row.image_url,
     }));
 
     return reply.send({
@@ -552,13 +572,33 @@ export function buildCatererServer() {
     const data = parseResult.data;
 
     const res = await pgPool.query(
-      `INSERT INTO caterer_svc.packages (caterer_id, name, description, price_per_plate_paise, min_guests, max_guests)
-       VALUES ($1, $2, $3, $4, $5, $6)
+      `INSERT INTO caterer_svc.packages (caterer_id, name, description, price_per_plate_paise, min_guests, max_guests, is_veg, image_url)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
        RETURNING *`,
-      [id, data.name, data.description || '', data.pricePerPlatePaise, data.minGuests, data.maxGuests]
+      [id, data.name, data.description || '', data.pricePerPlatePaise, data.minGuests, data.maxGuests, data.isVeg ?? false, (data as any).imageUrl || null]
     );
 
-    return reply.status(201).send({ package: res.rows[0] });
+    const createdPackage = res.rows[0];
+    const createdItems: any[] = [];
+
+    if (Array.isArray(data.items) && data.items.length > 0) {
+      for (const itm of data.items) {
+        const itemRes = await pgPool.query(
+          `INSERT INTO caterer_svc.package_items (package_id, name, category, image_url)
+           VALUES ($1, $2, $3, $4)
+           RETURNING *`,
+          [createdPackage.id, itm.name, itm.category, (itm as any).imageUrl || null]
+        );
+        createdItems.push(itemRes.rows[0]);
+      }
+    }
+
+    return reply.status(201).send({
+      package: {
+        ...createdPackage,
+        items: createdItems,
+      },
+    });
   });
 
   // Get caterer's availability & blackout dates (Caterer & Customer calendar)
@@ -817,7 +857,7 @@ export function buildCatererServer() {
   server.get('/api/caterers/:id/items', async (req, reply) => {
     const { id } = req.params as { id: string };
     const res = await pgPool.query(
-      `SELECT id, name, category, price_paise, is_veg, description, is_available, created_at, updated_at
+      `SELECT id, caterer_id, name, category, price_paise, is_veg, description, is_available, image_url, created_at, updated_at
        FROM caterer_svc.menu_items
        WHERE caterer_id = $1
        ORDER BY category ASC, name ASC`,
@@ -843,12 +883,14 @@ export function buildCatererServer() {
         }
       }
 
-      const { name, category, pricePaise, isVeg, description } = req.body as {
+      const { name, category, pricePaise, isVeg, description, imageUrl, image_url } = req.body as {
         name: string;
         category: string;
         pricePaise: number;
         isVeg?: boolean;
         description?: string;
+        imageUrl?: string;
+        image_url?: string;
       };
 
       if (!name || !category || pricePaise === undefined) {
@@ -860,17 +902,68 @@ export function buildCatererServer() {
         return reply.status(400).send({ error: `Category must be one of: ${validCategories.join(', ')}` });
       }
 
+      const finalImageUrl = imageUrl || image_url || null;
+
       const insRes = await pgPool.query(
-        `INSERT INTO caterer_svc.menu_items (caterer_id, name, category, price_paise, is_veg, description)
-         VALUES ($1, $2, $3, $4, $5, $6)
+        `INSERT INTO caterer_svc.menu_items (caterer_id, name, category, price_paise, is_veg, description, image_url)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)
          RETURNING *`,
-        [id, name.trim(), category, pricePaise, isVeg ?? true, description?.trim() || null]
+        [id, name.trim(), category, pricePaise, isVeg ?? true, description?.trim() || null, finalImageUrl]
       );
 
       return reply.status(201).send({ item: insRes.rows[0] });
     } catch (err: any) {
       req.log.error(err);
       return reply.status(500).send({ error: 'Failed to create menu item' });
+    }
+  });
+
+  // Update an existing menu item (including photo / imageUrl)
+  server.patch('/api/caterers/:id/items/:itemId', async (req, reply) => {
+    try {
+      const { id, itemId } = req.params as { id: string; itemId: string };
+      const authUser = getAuthenticatedUser(req);
+      if (!authUser) {
+        return reply.status(401).send({ error: 'Unauthorized: Authentication required' });
+      }
+
+      if (authUser.role !== 'admin') {
+        const cRes = await pgPool.query('SELECT owner_id FROM caterer_svc.caterers WHERE id = $1', [id]);
+        if (cRes.rows.length === 0 || cRes.rows[0].owner_id !== authUser.userId) {
+          return reply.status(403).send({ error: 'Forbidden: You do not own this caterer business' });
+        }
+      }
+
+      const body = req.body as any;
+      const currentRes = await pgPool.query(
+        'SELECT * FROM caterer_svc.menu_items WHERE id = $1 AND caterer_id = $2',
+        [itemId, id]
+      );
+      if (currentRes.rows.length === 0) {
+        return reply.status(404).send({ error: 'Menu item not found' });
+      }
+      const curr = currentRes.rows[0];
+
+      const name = body.name !== undefined ? body.name.trim() : curr.name;
+      const category = body.category !== undefined ? body.category : curr.category;
+      const pricePaise = body.pricePaise !== undefined ? body.pricePaise : (body.price_paise !== undefined ? body.price_paise : curr.price_paise);
+      const isVeg = body.isVeg !== undefined ? body.isVeg : (body.is_veg !== undefined ? body.is_veg : curr.is_veg);
+      const description = body.description !== undefined ? body.description : curr.description;
+      const imageUrl = body.imageUrl !== undefined ? body.imageUrl : (body.image_url !== undefined ? body.image_url : curr.image_url);
+      const isAvailable = body.isAvailable !== undefined ? body.isAvailable : (body.is_available !== undefined ? body.is_available : curr.is_available);
+
+      const updRes = await pgPool.query(
+        `UPDATE caterer_svc.menu_items
+         SET name = $1, category = $2, price_paise = $3, is_veg = $4, description = $5, image_url = $6, is_available = $7, updated_at = NOW()
+         WHERE id = $8 AND caterer_id = $9
+         RETURNING *`,
+        [name, category, pricePaise, isVeg, description, imageUrl, isAvailable, itemId, id]
+      );
+
+      return reply.send({ item: updRes.rows[0] });
+    } catch (err: any) {
+      req.log.error(err);
+      return reply.status(500).send({ error: 'Failed to update menu item' });
     }
   });
 

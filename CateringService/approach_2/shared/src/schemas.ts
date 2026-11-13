@@ -33,10 +33,12 @@ export const packageSchema = z.object({
   minGuests: z.number().int().min(10, 'Minimum 10 guests required'),
   maxGuests: z.number().int().positive().optional().nullable(),
   isVeg: z.boolean().default(false),
+  imageUrl: z.string().optional().nullable(),
   items: z.array(
     z.object({
       name: z.string().min(1, 'Item name is required'),
       category: z.enum(['starter', 'main', 'dessert', 'beverage']),
+      imageUrl: z.string().optional().nullable(),
     })
   ).default([]),
 });

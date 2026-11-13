@@ -42,6 +42,7 @@ export interface MenuItem {
   isVeg: boolean;
   description: string | null;
   isAvailable: boolean;
+  imageUrl?: string | null;
   createdAt: string;
   updatedAt: string;
 }
