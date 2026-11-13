@@ -48,6 +48,10 @@ export interface Caterer {
   rejection_reason: string | null;
   avg_rating: number;
   review_count: number;
+  min_guests?: number;
+  max_guests?: number;
+  lead_time_days?: number;
+  allows_custom_combo?: boolean;
   created_at: string;
   updated_at: string;
 }

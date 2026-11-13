@@ -107,6 +107,26 @@ export function buildBookingServer() {
         });
       }
 
+      // Verify caterer minimum and maximum guest rules
+      const catRuleRes = await pgPool.query(
+        'SELECT min_guests, max_guests, business_name FROM caterer_svc.caterers WHERE id = $1',
+        [catererId]
+      );
+
+      if (catRuleRes.rows.length > 0) {
+        const { min_guests, max_guests, business_name } = catRuleRes.rows[0];
+        if (min_guests && guestCount < min_guests) {
+          return reply.status(400).send({
+            error: `Booking requires a minimum of ${min_guests} guests for ${business_name || 'this caterer'}.`,
+          });
+        }
+        if (max_guests && guestCount > max_guests) {
+          return reply.status(400).send({
+            error: `Booking exceeds maximum limit of ${max_guests} guests for ${business_name || 'this caterer'}.`,
+          });
+        }
+      }
+
       // Verify package price to calculate total_amount_paise
       const pkgRes = await pgPool.query(
         'SELECT price_per_plate_paise FROM caterer_svc.packages WHERE id = $1 AND caterer_id = $2',

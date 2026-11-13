@@ -24,6 +24,28 @@ export interface UserProfile {
   createdAt: string;
 }
 
+export type MenuItemCategory =
+  | 'welcome_drink'
+  | 'starter'
+  | 'main'
+  | 'bread_rice'
+  | 'dessert'
+  | 'beverage'
+  | 'accompaniment';
+
+export interface MenuItem {
+  id: string;
+  catererId: string;
+  name: string;
+  category: MenuItemCategory;
+  pricePaise: number;
+  isVeg: boolean;
+  description: string | null;
+  isAvailable: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface Caterer {
   id: string;
   ownerId: string;
@@ -38,6 +60,10 @@ export interface Caterer {
   rejectionReason: string | null;
   avgRating: number;
   reviewCount: number;
+  minGuests?: number;
+  maxGuests?: number;
+  leadTimeDays?: number;
+  allowsCustomCombo?: boolean;
   createdAt: string;
   updatedAt: string;
 }

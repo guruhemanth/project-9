@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useAuth } from '@/lib/auth/AuthContext';
-import { Clock, CheckCircle2, Utensils, FileText, Calendar as CalendarIcon } from 'lucide-react';
+import { Clock, CheckCircle2, Utensils, FileText, Calendar as CalendarIcon, MessageSquare, Settings } from 'lucide-react';
 import { formatPaiseToINR } from '@/lib/formatters';
 import { fetchCatererSettlements } from '@/features/payment/api';
 import { fetchCatererBookings, acceptBooking, rejectBooking } from './api';
@@ -9,6 +9,9 @@ import { PackageList } from './components/PackageList';
 import { CreatePackageModal } from './components/CreatePackageModal';
 import { IncomingRequestsQueue } from './components/IncomingRequestsQueue';
 import { BlackoutDateManager } from './components/BlackoutDateManager';
+import { MenuItemsManager } from './components/MenuItemsManager';
+import { CatererOrderSettings } from './components/CatererOrderSettings';
+import { PartnerChatHub } from '@/features/chat/PartnerChatHub';
 import type { Caterer, Package, PackageItem, Booking } from '@/types/database';
 
 export const CatererDashboard: React.FC = () => {
@@ -79,7 +82,9 @@ export const CatererDashboard: React.FC = () => {
   ]);
 
   const [showCreateModal, setShowCreateModal] = useState(false);
-  const [activeTab, setActiveTab] = useState<'requests' | 'packages' | 'calendar' | 'earnings'>('requests');
+  const [activeTab, setActiveTab] = useState<
+    'requests' | 'packages' | 'menu_items' | 'messages' | 'policies' | 'calendar' | 'earnings'
+  >('requests');
   const [settlementData, setSettlementData] = useState<any>(null);
 
   const loadBookings = React.useCallback(async () => {
@@ -234,7 +239,40 @@ export const CatererDashboard: React.FC = () => {
           }`}
         >
           <Utensils className="h-4 w-4" />
-          <span>Menu Packages ({packages.length})</span>
+          <span>Combo Packages ({packages.length})</span>
+        </button>
+        <button
+          onClick={() => setActiveTab('menu_items')}
+          className={`flex items-center gap-2 border-b-2 px-4 py-2.5 text-xs sm:text-sm font-semibold transition ${
+            activeTab === 'menu_items'
+              ? 'border-emerald-600 text-emerald-700'
+              : 'border-transparent text-slate-600 hover:text-slate-900'
+          }`}
+        >
+          <Utensils className="h-4 w-4 text-amber-600" />
+          <span>Master Dishes Catalog</span>
+        </button>
+        <button
+          onClick={() => setActiveTab('messages')}
+          className={`flex items-center gap-2 border-b-2 px-4 py-2.5 text-xs sm:text-sm font-semibold transition ${
+            activeTab === 'messages'
+              ? 'border-emerald-600 text-emerald-700'
+              : 'border-transparent text-slate-600 hover:text-slate-900'
+          }`}
+        >
+          <MessageSquare className="h-4 w-4 text-amber-600" />
+          <span>Customer Chats</span>
+        </button>
+        <button
+          onClick={() => setActiveTab('policies')}
+          className={`flex items-center gap-2 border-b-2 px-4 py-2.5 text-xs sm:text-sm font-semibold transition ${
+            activeTab === 'policies'
+              ? 'border-emerald-600 text-emerald-700'
+              : 'border-transparent text-slate-600 hover:text-slate-900'
+          }`}
+        >
+          <Settings className="h-4 w-4" />
+          <span>Order Policies</span>
         </button>
         <button
           onClick={() => setActiveTab('calendar')}
@@ -274,6 +312,24 @@ export const CatererDashboard: React.FC = () => {
           packages={packages}
           onAddPackageClick={() => setShowCreateModal(true)}
           onToggleActive={handleToggleActive}
+        />
+      )}
+
+      {activeTab === 'menu_items' && (
+        <MenuItemsManager catererId={caterer.id} />
+      )}
+
+      {activeTab === 'messages' && (
+        <PartnerChatHub />
+      )}
+
+      {activeTab === 'policies' && (
+        <CatererOrderSettings
+          catererId={caterer.id}
+          initialMinGuests={caterer.min_guests}
+          initialMaxGuests={caterer.max_guests}
+          initialLeadDays={caterer.lead_time_days}
+          initialAllowsCustomCombo={caterer.allows_custom_combo}
         />
       )}
 

@@ -135,6 +135,9 @@ export function buildCatererServer() {
       status: row.status,
       avgRating: parseFloat(row.avg_rating || '0'),
       reviewCount: row.review_count,
+      minGuests: row.min_guests || 25,
+      maxGuests: row.max_guests || 2000,
+      allowsCustomCombo: row.allows_custom_combo ?? true,
       packages: row.packages,
       createdAt: row.created_at,
     }));
@@ -212,6 +215,24 @@ export function buildCatererServer() {
       items: row.items,
     }));
 
+    const menuItemsRes = await pgPool.query(
+      `SELECT id, name, category, price_paise, is_veg, description, is_available
+       FROM caterer_svc.menu_items
+       WHERE caterer_id = $1
+       ORDER BY category ASC, name ASC`,
+      [id]
+    );
+
+    const menuItems = menuItemsRes.rows.map((row) => ({
+      id: row.id,
+      name: row.name,
+      category: row.category,
+      pricePaise: row.price_paise,
+      isVeg: row.is_veg,
+      description: row.description,
+      isAvailable: row.is_available,
+    }));
+
     return reply.send({
       caterer: {
         id: c.id,
@@ -228,7 +249,11 @@ export function buildCatererServer() {
         status: c.status,
         avgRating: parseFloat(c.avg_rating || '0'),
         reviewCount: c.review_count,
+        minGuests: c.min_guests || 25,
+        maxGuests: c.max_guests || 2000,
+        allowsCustomCombo: c.allows_custom_combo ?? true,
         packages,
+        menuItems,
         createdAt: c.created_at,
       },
     });
@@ -647,6 +672,169 @@ export function buildCatererServer() {
     } catch (err: any) {
       req.log.error(err);
       return reply.status(500).send({ error: 'Failed to update caterer status' });
+    }
+  });
+
+  // Caterer Menu Item Management (CRUD)
+  // List menu items for a caterer
+  server.get('/api/caterers/:id/items', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const res = await pgPool.query(
+      `SELECT id, name, category, price_paise, is_veg, description, is_available, created_at, updated_at
+       FROM caterer_svc.menu_items
+       WHERE caterer_id = $1
+       ORDER BY category ASC, name ASC`,
+      [id]
+    );
+    return reply.send({ items: res.rows });
+  });
+
+  // Add a new individual menu item
+  server.post('/api/caterers/:id/items', async (req, reply) => {
+    try {
+      const { id } = req.params as { id: string };
+      const authUser = getAuthenticatedUser(req);
+      if (!authUser) {
+        return reply.status(401).send({ error: 'Unauthorized: Authentication required' });
+      }
+
+      // Assert ownership
+      if (authUser.role !== 'admin') {
+        const cRes = await pgPool.query('SELECT owner_id FROM caterer_svc.caterers WHERE id = $1', [id]);
+        if (cRes.rows.length === 0 || cRes.rows[0].owner_id !== authUser.userId) {
+          return reply.status(403).send({ error: 'Forbidden: You do not own this caterer business' });
+        }
+      }
+
+      const { name, category, pricePaise, isVeg, description } = req.body as {
+        name: string;
+        category: string;
+        pricePaise: number;
+        isVeg?: boolean;
+        description?: string;
+      };
+
+      if (!name || !category || pricePaise === undefined) {
+        return reply.status(400).send({ error: 'Name, category, and price are required' });
+      }
+
+      const validCategories = ['welcome_drink', 'starter', 'main', 'bread_rice', 'dessert', 'beverage', 'accompaniment'];
+      if (!validCategories.includes(category)) {
+        return reply.status(400).send({ error: `Category must be one of: ${validCategories.join(', ')}` });
+      }
+
+      const insRes = await pgPool.query(
+        `INSERT INTO caterer_svc.menu_items (caterer_id, name, category, price_paise, is_veg, description)
+         VALUES ($1, $2, $3, $4, $5, $6)
+         RETURNING *`,
+        [id, name.trim(), category, pricePaise, isVeg ?? true, description?.trim() || null]
+      );
+
+      return reply.status(201).send({ item: insRes.rows[0] });
+    } catch (err: any) {
+      req.log.error(err);
+      return reply.status(500).send({ error: 'Failed to create menu item' });
+    }
+  });
+
+  // Delete a menu item
+  server.delete('/api/caterers/:id/items/:itemId', async (req, reply) => {
+    try {
+      const { id, itemId } = req.params as { id: string; itemId: string };
+      const authUser = getAuthenticatedUser(req);
+      if (!authUser) {
+        return reply.status(401).send({ error: 'Unauthorized: Authentication required' });
+      }
+
+      if (authUser.role !== 'admin') {
+        const cRes = await pgPool.query('SELECT owner_id FROM caterer_svc.caterers WHERE id = $1', [id]);
+        if (cRes.rows.length === 0 || cRes.rows[0].owner_id !== authUser.userId) {
+          return reply.status(403).send({ error: 'Forbidden: You do not own this caterer business' });
+        }
+      }
+
+      await pgPool.query('DELETE FROM caterer_svc.menu_items WHERE id = $1 AND caterer_id = $2', [itemId, id]);
+      return reply.send({ success: true, message: 'Item deleted' });
+    } catch (err: any) {
+      req.log.error(err);
+      return reply.status(500).send({ error: 'Failed to delete menu item' });
+    }
+  });
+
+  // Toggle availability of a menu item
+  server.patch('/api/caterers/:id/items/:itemId/toggle-availability', async (req, reply) => {
+    try {
+      const { id, itemId } = req.params as { id: string; itemId: string };
+      const authUser = getAuthenticatedUser(req);
+      if (!authUser) {
+        return reply.status(401).send({ error: 'Unauthorized: Authentication required' });
+      }
+
+      if (authUser.role !== 'admin') {
+        const cRes = await pgPool.query('SELECT owner_id FROM caterer_svc.caterers WHERE id = $1', [id]);
+        if (cRes.rows.length === 0 || cRes.rows[0].owner_id !== authUser.userId) {
+          return reply.status(403).send({ error: 'Forbidden: You do not own this caterer business' });
+        }
+      }
+
+      const updateRes = await pgPool.query(
+        `UPDATE caterer_svc.menu_items
+         SET is_available = NOT is_available, updated_at = NOW()
+         WHERE id = $1 AND caterer_id = $2
+         RETURNING *`,
+        [itemId, id]
+      );
+
+      if (updateRes.rows.length === 0) {
+        return reply.status(404).send({ error: 'Menu item not found' });
+      }
+
+      return reply.send({ item: updateRes.rows[0] });
+    } catch (err: any) {
+      req.log.error(err);
+      return reply.status(500).send({ error: 'Failed to update menu item' });
+    }
+  });
+
+  // Update Caterer Guest & Order Settings (min_guests, max_guests, lead_time_days)
+  server.patch('/api/caterers/:id/settings', async (req, reply) => {
+    try {
+      const { id } = req.params as { id: string };
+      const authUser = getAuthenticatedUser(req);
+      if (!authUser) {
+        return reply.status(401).send({ error: 'Unauthorized: Authentication required' });
+      }
+
+      if (authUser.role !== 'admin') {
+        const cRes = await pgPool.query('SELECT owner_id FROM caterer_svc.caterers WHERE id = $1', [id]);
+        if (cRes.rows.length === 0 || cRes.rows[0].owner_id !== authUser.userId) {
+          return reply.status(403).send({ error: 'Forbidden: You do not own this caterer business' });
+        }
+      }
+
+      const { minGuests, maxGuests, leadTimeDays, allowsCustomCombo } = req.body as {
+        minGuests?: number;
+        maxGuests?: number;
+        leadTimeDays?: number;
+        allowsCustomCombo?: boolean;
+      };
+
+      const res = await pgPool.query(
+        `UPDATE caterer_svc.caterers
+         SET min_guests = COALESCE($1, min_guests),
+             max_guests = COALESCE($2, max_guests),
+             lead_time_days = COALESCE($3, lead_time_days),
+             allows_custom_combo = COALESCE($4, allows_custom_combo),
+             updated_at = NOW()
+         WHERE id = $5
+         RETURNING id, business_name, min_guests, max_guests, lead_time_days, allows_custom_combo`,
+        [minGuests, maxGuests, leadTimeDays, allowsCustomCombo, id]
+      );
+
+      return reply.send({ settings: res.rows[0] });
+    } catch (err: any) {
+      req.log.error(err);
+      return reply.status(500).send({ error: 'Failed to update caterer settings' });
     }
   });
 

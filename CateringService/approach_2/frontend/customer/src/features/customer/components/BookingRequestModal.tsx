@@ -46,13 +46,16 @@ export const BookingRequestModal: React.FC<Props> = ({
     e.preventDefault();
     setError(null);
 
-    if (guestCount < packageItem.min_guests) {
-      setError(`Minimum guests for this package is ${packageItem.min_guests}`);
+    const effectiveMinGuests = Math.max(packageItem.min_guests || 10, caterer.min_guests || 25);
+    const effectiveMaxGuests = caterer.max_guests || packageItem.max_guests;
+
+    if (guestCount < effectiveMinGuests) {
+      setError(`Minimum guests required by ${caterer.business_name} is ${effectiveMinGuests} guests.`);
       return;
     }
 
-    if (packageItem.max_guests && guestCount > packageItem.max_guests) {
-      setError(`Maximum guests for this package is ${packageItem.max_guests}`);
+    if (effectiveMaxGuests && guestCount > effectiveMaxGuests) {
+      setError(`Maximum capacity for ${caterer.business_name} is ${effectiveMaxGuests} guests.`);
       return;
     }
 
@@ -160,13 +163,15 @@ export const BookingRequestModal: React.FC<Props> = ({
           <div>
             <div className="flex items-center justify-between">
               <label className="block text-xs font-semibold uppercase text-slate-600">Guest Count</label>
-              <span className="text-[10px] text-slate-400">Min: {packageItem.min_guests} guests</span>
+              <span className="text-[10px] text-slate-400">
+                Min: {Math.max(packageItem.min_guests || 10, caterer.min_guests || 25)} guests
+              </span>
             </div>
             <input
               type="number"
               required
-              min={packageItem.min_guests}
-              max={packageItem.max_guests || undefined}
+              min={Math.max(packageItem.min_guests || 10, caterer.min_guests || 25)}
+              max={caterer.max_guests || packageItem.max_guests || undefined}
               value={guestCount}
               onChange={(e) => setGuestCount(Number(e.target.value))}
               className="mt-1 w-full rounded-lg border border-slate-300 py-2 px-3 text-xs focus:border-emerald-500 focus:outline-none font-semibold"

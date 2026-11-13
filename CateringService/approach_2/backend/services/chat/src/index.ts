@@ -255,6 +255,164 @@ export function buildChatServer() {
     }
   });
 
+  // Dedicated Chat Inbox for Caterers: List all active chat conversations across their bookings
+  server.get('/api/chat/caterer/inbox', async (req, reply) => {
+    try {
+      const user = getAuthenticatedUser(req);
+      if (!user) {
+        return reply.status(401).send({ error: 'Unauthorized: Authentication required' });
+      }
+
+      // Assert caterer identity or admin
+      const cRes = await pgPool.query('SELECT id FROM caterer_svc.caterers WHERE owner_id = $1', [user.userId]);
+      if (cRes.rows.length === 0 && user.role !== 'admin') {
+        return reply.status(403).send({ error: 'Forbidden: No caterer business associated with this account' });
+      }
+
+      const catererId = cRes.rows[0]?.id;
+
+      let sql = `
+        SELECT 
+          t.id as thread_id,
+          t.booking_id,
+          t.last_message_at,
+          t.created_at as thread_created_at,
+          u.id as customer_id,
+          u.full_name as customer_name,
+          u.phone as customer_phone,
+          b.status as booking_status,
+          b.event_date,
+          b.guest_count,
+          b.venue_address,
+          p.name as package_name,
+          (
+            SELECT message 
+            FROM chat_svc.chat_messages m 
+            WHERE m.thread_id = t.id 
+            ORDER BY m.created_at DESC 
+            LIMIT 1
+          ) as last_message_text,
+          (
+            SELECT sender_role 
+            FROM chat_svc.chat_messages m 
+            WHERE m.thread_id = t.id 
+            ORDER BY m.created_at DESC 
+            LIMIT 1
+          ) as last_message_sender_role
+        FROM chat_svc.chat_threads t
+        JOIN order_svc.bookings b ON t.booking_id = b.id
+        JOIN auth_svc.users u ON t.customer_id = u.id
+        LEFT JOIN caterer_svc.packages p ON b.package_id = p.id
+      `;
+
+      const params: any[] = [];
+      if (user.role !== 'admin') {
+        params.push(catererId);
+        sql += ` WHERE t.caterer_id = $1`;
+      }
+      sql += ` ORDER BY t.last_message_at DESC NULLS LAST, t.created_at DESC`;
+
+      const res = await pgPool.query(sql, params);
+
+      return reply.send({
+        inbox: res.rows.map((r) => ({
+          threadId: r.thread_id,
+          bookingId: r.booking_id,
+          bookingStatus: r.booking_status,
+          eventDate: r.event_date,
+          guestCount: r.guest_count,
+          venueAddress: r.venue_address,
+          packageName: r.package_name,
+          customer: {
+            id: r.customer_id,
+            name: r.customer_name,
+            phone: r.customer_phone,
+          },
+          lastMessage: r.last_message_text
+            ? {
+                text: r.last_message_text,
+                senderRole: r.last_message_sender_role,
+              }
+            : null,
+          lastMessageAt: r.last_message_at || r.thread_created_at,
+        })),
+      });
+    } catch (err: any) {
+      console.error('GET /api/chat/caterer/inbox error:', err);
+      return reply.status(500).send({ error: 'Failed to retrieve caterer inbox' });
+    }
+  });
+
+  // Dedicated Chat Inbox for Customers: List all active caterer conversations
+  server.get('/api/chat/customer/inbox', async (req, reply) => {
+    try {
+      const user = getAuthenticatedUser(req);
+      if (!user) {
+        return reply.status(401).send({ error: 'Unauthorized: Authentication required' });
+      }
+
+      const sql = `
+        SELECT 
+          t.id as thread_id,
+          t.booking_id,
+          t.last_message_at,
+          t.created_at as thread_created_at,
+          c.id as caterer_id,
+          c.business_name,
+          c.city,
+          b.status as booking_status,
+          b.event_date,
+          b.guest_count,
+          (
+            SELECT message 
+            FROM chat_svc.chat_messages m 
+            WHERE m.thread_id = t.id 
+            ORDER BY m.created_at DESC 
+            LIMIT 1
+          ) as last_message_text,
+          (
+            SELECT sender_role 
+            FROM chat_svc.chat_messages m 
+            WHERE m.thread_id = t.id 
+            ORDER BY m.created_at DESC 
+            LIMIT 1
+          ) as last_message_sender_role
+        FROM chat_svc.chat_threads t
+        JOIN order_svc.bookings b ON t.booking_id = b.id
+        JOIN caterer_svc.caterers c ON t.caterer_id = c.id
+        WHERE t.customer_id = $1
+        ORDER BY t.last_message_at DESC NULLS LAST, t.created_at DESC
+      `;
+
+      const res = await pgPool.query(sql, [user.userId]);
+
+      return reply.send({
+        inbox: res.rows.map((r) => ({
+          threadId: r.thread_id,
+          bookingId: r.booking_id,
+          bookingStatus: r.booking_status,
+          eventDate: r.event_date,
+          guestCount: r.guest_count,
+          caterer: {
+            id: r.caterer_id,
+            businessName: r.business_name,
+            city: r.city,
+          },
+          lastMessage: r.last_message_text
+            ? {
+                text: r.last_message_text,
+                senderRole: r.last_message_sender_role,
+              }
+            : null,
+          lastMessageAt: r.last_message_at || r.thread_created_at,
+        })),
+      });
+    } catch (err: any) {
+      console.error('GET /api/chat/customer/inbox error:', err);
+      return reply.status(500).send({ error: 'Failed to retrieve customer inbox' });
+    }
+  });
+
   // WebSocket connection for real-time live messaging
   server.register(async function (fastify) {
     fastify.get('/api/chat/ws/:threadId', { websocket: true }, async (socket, req) => {
