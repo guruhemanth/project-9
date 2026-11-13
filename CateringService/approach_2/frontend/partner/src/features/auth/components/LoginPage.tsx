@@ -43,8 +43,8 @@ export const LoginPage: React.FC = () => {
     <div className="flex min-h-[75vh] items-center justify-center px-4 py-8">
       <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-6 shadow-sm sm:p-8">
         <div className="mb-6 text-center">
-          <h2 className="text-2xl font-bold text-slate-900">Partner & Admin Sign In</h2>
-          <p className="mt-1 text-sm text-slate-600">Authorized Caterer & Platform Operations Portal</p>
+          <h2 className="text-2xl font-bold text-slate-900">Partner Sign In</h2>
+          <p className="mt-1 text-sm text-slate-600">Authorized Caterer &amp; Partner Portal</p>
         </div>
 
         {error && (
@@ -64,7 +64,7 @@ export const LoginPage: React.FC = () => {
                 required
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                placeholder="caterer@svck.com or admin@caterconnect.com"
+                placeholder="caterer@example.com"
                 className="w-full rounded-lg border border-slate-200 py-2.5 pl-9 pr-3 text-sm focus:border-amber-600 focus:outline-none focus:ring-1 focus:ring-amber-600"
               />
             </div>
@@ -95,7 +95,7 @@ export const LoginPage: React.FC = () => {
         </form>
 
         <p className="mt-6 text-center text-xs text-slate-600">
-          Want to become an approved caterer in Tirupati?{' '}
+          Want to become an approved catering partner?{' '}
           <Link to="/register" className="font-semibold text-amber-600 hover:underline">
             Register your business
           </Link>

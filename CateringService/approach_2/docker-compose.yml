@@ -6,19 +6,28 @@ services:
     container_name: caterconnect-postgres
     restart: always
     environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgrespassword
-      POSTGRES_DB: caterconnect
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-CaterPG123}
+      POSTGRES_DB: ${POSTGRES_DB:-caterconnect}
     ports:
-      - "5432:5432"
+      - "54322:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
       - ./database/01_init_schemas.sql:/docker-entrypoint-initdb.d/01_init_schemas.sql
-      - ./database/02_seed_data.sql:/docker-entrypoint-initdb.d/02_seed_data.sql
       - ./database/03_availability_schema.sql:/docker-entrypoint-initdb.d/03_availability_schema.sql
       - ./database/04_settlement_schema.sql:/docker-entrypoint-initdb.d/04_settlement_schema.sql
       - ./database/05_notification_schema.sql:/docker-entrypoint-initdb.d/05_notification_schema.sql
       - ./database/06_chat_schema.sql:/docker-entrypoint-initdb.d/06_chat_schema.sql
+      - ./database/07_pan_india_location.sql:/docker-entrypoint-initdb.d/07_pan_india_location.sql
+      - ./database/08_dynamic_commission.sql:/docker-entrypoint-initdb.d/08_dynamic_commission.sql
+      - ./database/09_google_auth.sql:/docker-entrypoint-initdb.d/09_google_auth.sql
+      - ./database/10_push_and_outbox.sql:/docker-entrypoint-initdb.d/10_push_and_outbox.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 
   auth-service:
     build:
@@ -28,12 +37,19 @@ services:
     restart: always
     environment:
       PORT: 4001
-      APP_DATABASE_URL: postgresql://postgres:postgrespassword@postgres:5432/caterconnect
-      JWT_SECRET: super-secret-jwt-token-with-at-least-32-characters-long
-    ports:
-      - "4001:4001"
+      NODE_ENV: ${NODE_ENV:-production}
+      DATABASE_URL: ${COMPOSE_DATABASE_URL:-postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-CaterPG123}@postgres:5432/${POSTGRES_DB:-caterconnect}}
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET (min 32 chars) is required}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-https://caterconnect.in,https://partner.caterconnect.in}
     depends_on:
-      - postgres
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://127.0.0.1:4001/ready || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 
   caterer-menu-service:
     build:
@@ -43,11 +59,18 @@ services:
     restart: always
     environment:
       PORT: 4002
-      APP_DATABASE_URL: postgresql://postgres:postgrespassword@postgres:5432/caterconnect
-    ports:
-      - "4002:4002"
+      NODE_ENV: ${NODE_ENV:-production}
+      DATABASE_URL: ${COMPOSE_DATABASE_URL:-postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-CaterPG123}@postgres:5432/${POSTGRES_DB:-caterconnect}}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-https://caterconnect.in,https://partner.caterconnect.in}
     depends_on:
-      - postgres
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://127.0.0.1:4002/ready || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 
   booking-order-service:
     build:
@@ -57,11 +80,18 @@ services:
     restart: always
     environment:
       PORT: 4003
-      APP_DATABASE_URL: postgresql://postgres:postgrespassword@postgres:5432/caterconnect
-    ports:
-      - "4003:4003"
+      NODE_ENV: ${NODE_ENV:-production}
+      DATABASE_URL: ${COMPOSE_DATABASE_URL:-postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-CaterPG123}@postgres:5432/${POSTGRES_DB:-caterconnect}}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-https://caterconnect.in,https://partner.caterconnect.in}
     depends_on:
-      - postgres
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://127.0.0.1:4003/ready || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 
   payment-service:
     build:
@@ -71,14 +101,21 @@ services:
     restart: always
     environment:
       PORT: 4004
-      APP_DATABASE_URL: postgresql://postgres:postgrespassword@postgres:5432/caterconnect
-      RAZORPAY_KEY_ID: rzp_test_placeholder_key
-      RAZORPAY_KEY_SECRET: rzp_test_placeholder_secret
-      RAZORPAY_WEBHOOK_SECRET: caterconnect_test_webhook_secret_key
-    ports:
-      - "4004:4004"
+      NODE_ENV: ${NODE_ENV:-production}
+      DATABASE_URL: ${COMPOSE_DATABASE_URL:-postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-CaterPG123}@postgres:5432/${POSTGRES_DB:-caterconnect}}
+      RAZORPAY_KEY_ID: ${RAZORPAY_KEY_ID:?RAZORPAY_KEY_ID is required}
+      RAZORPAY_KEY_SECRET: ${RAZORPAY_KEY_SECRET:?RAZORPAY_KEY_SECRET is required}
+      RAZORPAY_WEBHOOK_SECRET: ${RAZORPAY_WEBHOOK_SECRET:?RAZORPAY_WEBHOOK_SECRET is required}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-https://caterconnect.in,https://partner.caterconnect.in}
     depends_on:
-      - postgres
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://127.0.0.1:4004/ready || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 
   notification-service:
     build:
@@ -88,11 +125,18 @@ services:
     restart: always
     environment:
       PORT: 4005
-      APP_DATABASE_URL: postgresql://postgres:postgrespassword@postgres:5432/caterconnect
-    ports:
-      - "4005:4005"
+      NODE_ENV: ${NODE_ENV:-production}
+      DATABASE_URL: ${COMPOSE_DATABASE_URL:-postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-CaterPG123}@postgres:5432/${POSTGRES_DB:-caterconnect}}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-https://caterconnect.in,https://partner.caterconnect.in}
     depends_on:
-      - postgres
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://127.0.0.1:4005/ready || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 
   chat-service:
     build:
@@ -102,11 +146,18 @@ services:
     restart: always
     environment:
       PORT: 4006
-      APP_DATABASE_URL: postgresql://postgres:postgrespassword@postgres:5432/caterconnect
-    ports:
-      - "4006:4006"
+      NODE_ENV: ${NODE_ENV:-production}
+      DATABASE_URL: ${COMPOSE_DATABASE_URL:-postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-CaterPG123}@postgres:5432/${POSTGRES_DB:-caterconnect}}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-https://caterconnect.in,https://partner.caterconnect.in}
     depends_on:
-      - postgres
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://127.0.0.1:4006/ready || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 
   api-gateway:
     build:
@@ -116,7 +167,9 @@ services:
     restart: always
     environment:
       PORT: 8080
-      JWT_SECRET: super-secret-jwt-token-with-at-least-32-characters-long
+      NODE_ENV: ${NODE_ENV:-production}
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET (min 32 chars) is required}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-https://caterconnect.in,https://partner.caterconnect.in}
       AUTH_SERVICE_URL: http://auth-service:4001
       CATERER_SERVICE_URL: http://caterer-menu-service:4002
       BOOKING_SERVICE_URL: http://booking-order-service:4003
@@ -126,12 +179,24 @@ services:
     ports:
       - "8080:8080"
     depends_on:
-      - auth-service
-      - caterer-menu-service
-      - booking-order-service
-      - payment-service
-      - notification-service
-      - chat-service
+      auth-service:
+        condition: service_healthy
+      caterer-menu-service:
+        condition: service_healthy
+      booking-order-service:
+        condition: service_healthy
+      payment-service:
+        condition: service_healthy
+      notification-service:
+        condition: service_healthy
+      chat-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://127.0.0.1:8080/ready || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 
   customer-app:
     build:
@@ -142,7 +207,8 @@ services:
     ports:
       - "3000:80"
     depends_on:
-      - api-gateway
+      api-gateway:
+        condition: service_healthy
 
   partner-app:
     build:
@@ -153,7 +219,8 @@ services:
     ports:
       - "3001:80"
     depends_on:
-      - api-gateway
+      api-gateway:
+        condition: service_healthy
 
 volumes:
   pgdata:

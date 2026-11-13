@@ -66,3 +66,13 @@ export async function disburseSettlement(
 export async function updateCommissionPct(_pct: number): Promise<boolean> {
   return true;
 }
+
+export async function updateCatererCommission(
+  catererId: string,
+  commissionPct: number
+): Promise<{ caterer: any }> {
+  return apiFetch(`/api/caterers/${catererId}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ commissionPct }),
+  });
+}

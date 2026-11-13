@@ -16,6 +16,7 @@ export const CreatePackageModal: React.FC<Props> = ({ catererId, onClose, onCrea
   const [minGuests, setMinGuests] = useState<number>(50);
   const [maxGuests, setMaxGuests] = useState<number | ''>(500);
   const [isVeg, setIsVeg] = useState(true);
+  const [imageUrl, setImageUrl] = useState('');
 
   // Items
   const [items, setItems] = useState<{ name: string; category: 'starter' | 'main' | 'dessert' | 'beverage' }[]>([
@@ -51,6 +52,7 @@ export const CreatePackageModal: React.FC<Props> = ({ catererId, onClose, onCrea
       max_guests: maxGuests ? Number(maxGuests) : null,
       is_veg: isVeg,
       is_active: true,
+      image_url: imageUrl.trim() || null,
       created_at: new Date().toISOString(),
       items: items.map((item, idx) => ({
         id: 'item-' + idx + '-' + Date.now(),
@@ -96,6 +98,17 @@ export const CreatePackageModal: React.FC<Props> = ({ catererId, onClose, onCrea
               value={description}
               onChange={(e) => setDescription(e.target.value)}
               placeholder="Traditional buffet with authentic South Indian flavors..."
+              className="mt-1 w-full rounded-lg border border-slate-300 py-2 px-3 text-sm focus:border-emerald-500 focus:outline-none"
+            />
+          </div>
+
+          <div>
+            <label className="block text-xs font-semibold uppercase text-slate-600">Package Photo URL (Optional)</label>
+            <input
+              type="url"
+              value={imageUrl}
+              onChange={(e) => setImageUrl(e.target.value)}
+              placeholder="https://images.unsplash.com/... (Feast Thali Photo)"
               className="mt-1 w-full rounded-lg border border-slate-300 py-2 px-3 text-sm focus:border-emerald-500 focus:outline-none"
             />
           </div>

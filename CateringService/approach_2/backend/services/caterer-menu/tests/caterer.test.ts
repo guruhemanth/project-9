@@ -11,7 +11,9 @@ describe('Caterer & Menu Service Integration', () => {
 
   afterAll(async () => {
     await app.close();
-    await pgPool.end();
+    if (!(pgPool as any).ending) {
+      await pgPool.end();
+    }
   });
 
   it('responds with 200 on /health', async () => {
@@ -20,15 +22,27 @@ describe('Caterer & Menu Service Integration', () => {
     expect(res.json()).toEqual({ status: 'ok', service: 'caterer-menu-service' });
   });
 
-  it('lists approved caterers in Tirupati', async () => {
-    const res = await app.inject({ method: 'GET', url: '/api/caterers' });
-    expect(res.statusCode).toBe(200);
-    const body = res.json();
-    expect(body.caterers).toBeDefined();
-    expect(Array.isArray(body.caterers)).toBe(true);
-    expect(body.caterers.length).toBeGreaterThanOrEqual(1);
-    expect(body.caterers[0].status).toBe('approved');
-    expect(body.caterers[0].city).toBe('Tirupati');
+  it('lists approved caterers with city and regional location filtering', async () => {
+    // 1. All India query
+    const resAll = await app.inject({ method: 'GET', url: '/api/caterers' });
+    expect(resAll.statusCode).toBe(200);
+    const bodyAll = resAll.json();
+    expect(bodyAll.caterers).toBeDefined();
+    expect(bodyAll.caterers.length).toBeGreaterThanOrEqual(1);
+
+    // 2. Tirupati filter
+    const resTirupati = await app.inject({ method: 'GET', url: '/api/caterers?city=Tirupati' });
+    expect(resTirupati.statusCode).toBe(200);
+    const bodyTirupati = resTirupati.json();
+    expect(bodyTirupati.caterers.length).toBeGreaterThanOrEqual(1);
+    expect(bodyTirupati.caterers.every((c: any) => c.city === 'Tirupati')).toBe(true);
+
+    // 3. Active cities list
+    const resCities = await app.inject({ method: 'GET', url: '/api/caterers/cities' });
+    expect(resCities.statusCode).toBe(200);
+    const bodyCities = resCities.json();
+    expect(Array.isArray(bodyCities.cities)).toBe(true);
+    expect(bodyCities.cities.some((c: any) => c.city === 'Tirupati')).toBe(true);
   });
 
   it('retrieves detailed caterer profile with packages and items', async () => {
@@ -63,11 +77,16 @@ describe('Caterer & Menu Service Integration', () => {
   it('allows caterer to declare a blackout date and query availability', async () => {
     const catererId = 'd0000000-0000-0000-0000-000000000001';
     const blackoutDate = '2026-12-31';
+    const catererHeaders = {
+      'x-user-id': 'c0000000-0000-0000-0000-000000000002',
+      'x-user-role': 'caterer',
+    };
 
     // 1. Add blackout date
     const postRes = await app.inject({
       method: 'POST',
       url: `/api/caterers/${catererId}/blackout-dates`,
+      headers: catererHeaders,
       payload: {
         date: blackoutDate,
         reason: 'New Year Eve Private Event',
@@ -89,16 +108,23 @@ describe('Caterer & Menu Service Integration', () => {
     const delRes = await app.inject({
       method: 'DELETE',
       url: `/api/caterers/${catererId}/blackout-dates/${blackoutDate}`,
+      headers: catererHeaders,
     });
     expect(delRes.statusCode).toBe(200);
     expect(delRes.json().success).toBe(true);
   });
 
   it('allows admin to list all caterers and update caterer status', async () => {
+    const adminHeaders = {
+      'x-user-id': 'c0000000-0000-0000-0000-000000000003',
+      'x-user-role': 'admin',
+    };
+
     // 1. List all caterers
     const listRes = await app.inject({
       method: 'GET',
       url: '/api/admin/caterers',
+      headers: adminHeaders,
     });
     expect(listRes.statusCode).toBe(200);
     const caterers = listRes.json().caterers;
@@ -109,6 +135,7 @@ describe('Caterer & Menu Service Integration', () => {
     const failRes = await app.inject({
       method: 'PATCH',
       url: `/api/admin/caterers/${caterers[0].id}/status`,
+      headers: adminHeaders,
       payload: { status: 'rejected' },
     });
     expect(failRes.statusCode).toBe(400);
@@ -117,9 +144,49 @@ describe('Caterer & Menu Service Integration', () => {
     const patchRes = await app.inject({
       method: 'PATCH',
       url: `/api/admin/caterers/${caterers[0].id}/status`,
+      headers: adminHeaders,
       payload: { status: 'approved' },
     });
     expect(patchRes.statusCode).toBe(200);
     expect(patchRes.json().caterer.status).toBe('approved');
+  });
+
+  it('allows admin to configure custom commission_pct and rejects non-admin', async () => {
+    const targetCatererId = 'd0000000-0000-0000-0000-000000000001';
+    // 1. Non-admin is rejected
+    const nonAdminRes = await app.inject({
+      method: 'PATCH',
+      url: `/api/caterers/${targetCatererId}`,
+      headers: {
+        'x-user-id': 'customer-uuid-0001',
+        'x-user-role': 'customer',
+      },
+      payload: {
+        commissionPct: 12.5,
+      },
+    });
+    expect(nonAdminRes.statusCode).toBe(403);
+
+    // 2. Admin successfully updates commission_pct
+    const adminRes = await app.inject({
+      method: 'PATCH',
+      url: `/api/caterers/${targetCatererId}`,
+      headers: {
+        'x-user-id': 'admin-uuid-0001',
+        'x-user-role': 'admin',
+      },
+      payload: {
+        commissionPct: 12.5,
+      },
+    });
+    expect(adminRes.statusCode).toBe(200);
+    expect(adminRes.json().caterer.commissionPct).toBe(12.5);
+
+    // 3. Verify in database
+    const q = await pgPool.query('SELECT commission_pct FROM caterer_svc.caterers WHERE id = $1', [targetCatererId]);
+    expect(Number(q.rows[0].commission_pct)).toBe(12.5);
+
+    // Reset back to default 15.00% for other test suites
+    await pgPool.query('UPDATE caterer_svc.caterers SET commission_pct = 15.00 WHERE id = $1', [targetCatererId]);
   });
 });

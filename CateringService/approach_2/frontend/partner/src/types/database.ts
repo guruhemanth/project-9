@@ -37,6 +37,9 @@ export interface Caterer {
   business_name: string;
   description: string | null;
   city: string;
+  state?: string;
+  pincode?: string | null;
+  address?: string | null;
   service_areas: string[];
   cuisines: string[];
   fssai_number: string;
@@ -45,6 +48,33 @@ export interface Caterer {
   rejection_reason: string | null;
   avg_rating: number;
   review_count: number;
+  min_guests?: number;
+  max_guests?: number;
+  lead_time_days?: number;
+  allows_custom_combo?: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export type MenuItemCategory =
+  | 'welcome_drink'
+  | 'starter'
+  | 'main'
+  | 'bread_rice'
+  | 'dessert'
+  | 'beverage'
+  | 'accompaniment';
+
+export interface MenuItem {
+  id: string;
+  caterer_id: string;
+  name: string;
+  category: MenuItemCategory;
+  price_paise: number;
+  is_veg: boolean;
+  description: string | null;
+  is_available: boolean;
+  image_url?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -67,6 +97,7 @@ export interface Package {
   max_guests: number | null;
   is_veg: boolean;
   is_active: boolean;
+  image_url?: string | null;
   created_at: string;
 }
 
@@ -75,6 +106,7 @@ export interface PackageItem {
   package_id: string;
   name: string;
   category: 'starter' | 'main' | 'dessert' | 'beverage';
+  image_url?: string | null;
 }
 
 export interface Addon {
@@ -88,6 +120,10 @@ export interface Addon {
 export interface Booking {
   id: string;
   customer_id: string;
+  customer_name?: string | null;
+  customer_phone?: string | null;
+  customer_email?: string | null;
+  package_name?: string;
   caterer_id: string;
   package_id: string;
   event_date: string; // YYYY-MM-DD
@@ -148,6 +184,10 @@ export interface Review {
   id: string;
   booking_id: string;
   customer_id: string;
+  customer_name?: string | null;
+  customer_phone?: string | null;
+  customer_email?: string | null;
+  package_name?: string;
   caterer_id: string;
   rating: number; // 1 to 5
   comment: string | null;

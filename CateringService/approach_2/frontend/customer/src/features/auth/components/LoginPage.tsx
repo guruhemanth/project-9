@@ -3,6 +3,7 @@ import { useNavigate, useLocation, Link } from 'react-router-dom';
 import { loginApi } from '../api';
 import { useAuth } from '@/lib/auth/AuthContext';
 import { Lock, Mail, AlertCircle } from 'lucide-react';
+import { GoogleSignInButton } from './GoogleSignInButton';
 
 export const LoginPage: React.FC = () => {
   const [email, setEmail] = useState('');
@@ -40,7 +41,7 @@ export const LoginPage: React.FC = () => {
       <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-6 shadow-sm sm:p-8">
         <div className="mb-6 text-center">
           <h2 className="text-2xl font-bold text-slate-900">Sign In to CaterConnect</h2>
-          <p className="mt-1 text-sm text-slate-600">Event Host & Customer Portal for Tirupati</p>
+          <p className="mt-1 text-sm text-slate-600">Event Host &amp; Customer Portal</p>
         </div>
 
         {error && (
@@ -89,6 +90,14 @@ export const LoginPage: React.FC = () => {
             {submitting ? 'Signing in...' : 'Sign In'}
           </button>
         </form>
+
+        <div className="my-5 flex items-center gap-3">
+          <div className="h-px flex-1 bg-slate-200" />
+          <span className="text-xs font-medium uppercase tracking-wider text-slate-600">OR</span>
+          <div className="h-px flex-1 bg-slate-200" />
+        </div>
+
+        <GoogleSignInButton onError={(msg) => setError(msg)} />
 
         <p className="mt-6 text-center text-xs text-slate-600">
           Don't have an account?{' '}

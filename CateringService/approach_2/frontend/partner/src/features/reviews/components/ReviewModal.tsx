@@ -14,8 +14,8 @@ interface Props {
 
 export const ReviewModal: React.FC<Props> = ({
   bookingId,
-  catererId,
-  customerId,
+  catererId: _catererId,
+  customerId: _customerId,
   catererName,
   onClose,
   onSuccess,
@@ -39,18 +39,7 @@ export const ReviewModal: React.FC<Props> = ({
       });
 
       if (!review) {
-        // Fallback for mock demo
-        const mockRev: Review = {
-          id: 'rev_' + Date.now(),
-          booking_id: bookingId,
-          customer_id: customerId,
-          caterer_id: catererId,
-          rating,
-          comment: comment.trim() || null,
-          created_at: new Date().toISOString(),
-        };
-        onSuccess(mockRev);
-        return;
+        throw new Error('No review response received from server');
       }
 
       onSuccess(review);
@@ -73,7 +62,7 @@ export const ReviewModal: React.FC<Props> = ({
 
         <h2 className="text-lg font-bold text-slate-900">Rate Caterer & Leave Review</h2>
         <p className="text-xs text-slate-500 mt-0.5">
-          How was your experience with <b>{catererName}</b> in Tirupati?
+          How was your catering experience with <b>{catererName}</b>?
         </p>
 
         {error && (

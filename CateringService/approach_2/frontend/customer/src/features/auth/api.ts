@@ -19,3 +19,17 @@ export async function registerApi(data: {
     body: JSON.stringify(data),
   });
 }
+
+export async function googleAuthApi(idToken: string) {
+  return apiFetch<{ user: any; token: string; refreshToken?: string }>('/api/auth/google', {
+    method: 'POST',
+    body: JSON.stringify({ idToken }),
+  });
+}
+
+export async function updatePhoneApi(phone: string) {
+  return apiFetch<{ success: boolean; user: any }>('/api/auth/update-phone', {
+    method: 'POST',
+    body: JSON.stringify({ phone }),
+  });
+}

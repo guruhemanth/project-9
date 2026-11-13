@@ -5,6 +5,7 @@ import { AppLayout } from './components/layout/AppLayout';
 import { CustomerHome } from './features/customer/CustomerHome';
 import { CatererDetailView } from './features/customer/components/CatererDetailView';
 import { CustomerBookingsList } from './features/customer/components/CustomerBookingsList';
+import { CustomerChatHub } from './features/chat/CustomerChatHub';
 import { LoginPage } from './features/auth/components/LoginPage';
 import { RegisterPage } from './features/auth/components/RegisterPage';
 
@@ -26,6 +27,14 @@ export default function App() {
               element={
                 <RequireAuth>
                   <CustomerBookingsList />
+                </RequireAuth>
+              }
+            />
+            <Route
+              path="/customer/messages"
+              element={
+                <RequireAuth>
+                  <CustomerChatHub />
                 </RequireAuth>
               }
             />

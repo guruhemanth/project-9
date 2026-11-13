@@ -1,87 +1,95 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '@/lib/auth/AuthContext';
-import { Clock, CheckCircle2, Utensils, FileText, Calendar as CalendarIcon } from 'lucide-react';
+import { Clock, CheckCircle2, Utensils, FileText, Calendar as CalendarIcon, MessageSquare, Settings, Loader2 } from 'lucide-react';
 import { formatPaiseToINR } from '@/lib/formatters';
 import { fetchCatererSettlements } from '@/features/payment/api';
+import { fetchCatererBookings, fetchCurrentCaterer, fetchCatererByOwner, acceptBooking, rejectBooking } from './api';
 import { CatererOnboardingForm } from './components/CatererOnboardingForm';
 import { PackageList } from './components/PackageList';
 import { CreatePackageModal } from './components/CreatePackageModal';
 import { IncomingRequestsQueue } from './components/IncomingRequestsQueue';
 import { BlackoutDateManager } from './components/BlackoutDateManager';
+import { MenuItemsManager } from './components/MenuItemsManager';
+import { CatererOrderSettings } from './components/CatererOrderSettings';
+import { PartnerChatHub } from '@/features/chat/PartnerChatHub';
 import type { Caterer, Package, PackageItem, Booking } from '@/types/database';
 
 export const CatererDashboard: React.FC = () => {
   const { user } = useAuth();
 
-  const [caterer, setCaterer] = useState<Caterer | null>({
-    id: 'd0000000-0000-0000-0000-000000000001',
-    owner_id: user?.id || 'c0000000-0000-0000-0000-000000000002',
-    business_name: 'Sri Venkateswara Catering Services',
-    description: 'Authentic Andhra & South Indian traditional wedding and event feasts in Tirupati.',
-    city: 'Tirupati',
-    service_areas: ['Alipiri', 'MR Palli', 'Bhavani Nagar', 'Chandragiri', 'Renigunta'],
-    cuisines: ['andhra', 'south_indian', 'traditional_meals'],
-    fssai_number: '10123000004567',
-    gst_number: '37AAAAA0000A1Z5',
-    status: 'approved',
-    rejection_reason: null,
-    avg_rating: 4.8,
-    review_count: 12,
-    created_at: new Date().toISOString(),
-    updated_at: new Date().toISOString(),
-  });
-
-  const [packages, setPackages] = useState<(Package & { items: PackageItem[] })[]>([
-    {
-      id: 'e0000000-0000-0000-0000-000000000001',
-      caterer_id: 'd0000000-0000-0000-0000-000000000001',
-      name: 'Grand Tirupati Wedding Feast',
-      description: 'Full traditional 18-course meal served on fresh plantain leaf with Tirupati Laddu sweet.',
-      price_per_plate: 35000,
-      min_guests: 50,
-      max_guests: 1000,
-      is_veg: true,
-      is_active: true,
-      created_at: new Date().toISOString(),
-      items: [
-        { id: '1', package_id: 'e1', name: 'Poori & Potato Masala', category: 'starter' },
-        { id: '2', package_id: 'e1', name: 'Gutti Vankaya Curry', category: 'main' },
-        { id: '3', package_id: 'e1', name: 'Andhra Tomato Pappu with Ghee', category: 'main' },
-        { id: '4', package_id: 'e1', name: 'Tirupati Style Besan Laddu', category: 'dessert' },
-      ],
-    },
-  ]);
-
-  const [incomingRequests, setIncomingRequests] = useState<Booking[]>([
-    {
-      id: 'b0000000-0000-0000-0000-000000000001',
-      customer_id: 'c0000000-0000-0000-0000-000000000001',
-      caterer_id: 'd0000000-0000-0000-0000-000000000001',
-      package_id: 'e0000000-0000-0000-0000-000000000001',
-      event_date: '2026-11-20',
-      event_time: '12:30:00',
-      guest_count: 100,
-      venue_address: 'MR Palli Community Hall, Tirupati',
-      city: 'Tirupati',
-      special_requests: 'Extra ghee for sambar and rasam',
-      status: 'requested',
-      total_amount: 3500000,
-      commission_pct: null,
-      commission_amount: null,
-      caterer_note: null,
-      cancelled_by: null,
-      cancel_reason: null,
-      refund_amount: 0,
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-    },
-  ]);
+  const [caterer, setCaterer] = useState<Caterer | null>(null);
+  const [packages, setPackages] = useState<(Package & { items: PackageItem[] })[]>([]);
+  const [incomingRequests, setIncomingRequests] = useState<Booking[]>([]);
+  const [loadingCaterer, setLoadingCaterer] = useState(true);
 
   const [showCreateModal, setShowCreateModal] = useState(false);
-  const [activeTab, setActiveTab] = useState<'requests' | 'packages' | 'calendar' | 'earnings'>('requests');
+  const [activeTab, setActiveTab] = useState<
+    'requests' | 'packages' | 'menu_items' | 'messages' | 'policies' | 'calendar' | 'earnings'
+  >('requests');
   const [settlementData, setSettlementData] = useState<any>(null);
 
-  React.useEffect(() => {
+  // Load authenticated caterer profile and packages dynamically
+  useEffect(() => {
+    let isMounted = true;
+    async function loadCatererProfile() {
+      if (!user) {
+        setLoadingCaterer(false);
+        return;
+      }
+      setLoadingCaterer(true);
+      try {
+        let res;
+        try {
+          res = await fetchCurrentCaterer();
+        } catch (meErr) {
+          if (user.id) {
+            res = await fetchCatererByOwner(user.id);
+          } else {
+            throw meErr;
+          }
+        }
+
+        if (isMounted && res?.caterer) {
+          setCaterer(res.caterer);
+          if (res.packages && Array.isArray(res.packages)) {
+            setPackages(res.packages);
+          }
+        }
+      } catch (err) {
+        console.warn('No active caterer profile found for this user, prompting onboarding:', err);
+        if (isMounted) {
+          setCaterer(null);
+        }
+      } finally {
+        if (isMounted) {
+          setLoadingCaterer(false);
+        }
+      }
+    }
+
+    loadCatererProfile();
+    return () => {
+      isMounted = false;
+    };
+  }, [user?.id]);
+
+  const loadBookings = useCallback(async () => {
+    if (!caterer?.id) return;
+    try {
+      const res = await fetchCatererBookings(caterer.id);
+      if (res && Array.isArray(res.bookings)) {
+        setIncomingRequests(res.bookings);
+      }
+    } catch (err) {
+      console.error('Failed to load caterer bookings:', err);
+    }
+  }, [caterer?.id]);
+
+  useEffect(() => {
+    loadBookings();
+  }, [loadBookings]);
+
+  useEffect(() => {
     if (caterer?.id && activeTab === 'earnings') {
       fetchCatererSettlements(caterer.id)
         .then((res) => setSettlementData(res))
@@ -100,42 +108,71 @@ export const CatererDashboard: React.FC = () => {
     setShowCreateModal(false);
   };
 
-  const handleAcceptRequest = (bookingId: string, note?: string) => {
-    setIncomingRequests((prev) =>
-      prev.map((r) =>
-        r.id === bookingId
-          ? {
-              ...r,
-              status: 'accepted',
-              commission_pct: 15.00,
-              commission_amount: Math.round(((r.total_amount || 0) * 15) / 100),
-              caterer_note: note || 'Accepted by caterer',
-              updated_at: new Date().toISOString(),
-            }
-          : r
-      )
-    );
+  const handleAcceptRequest = async (bookingId: string, note?: string) => {
+    try {
+      await acceptBooking(bookingId, note);
+      await loadBookings();
+    } catch (err) {
+      console.error('Failed to accept booking via API, applying local update:', err);
+      setIncomingRequests((prev) =>
+        prev.map((r) =>
+          r.id === bookingId
+            ? {
+                ...r,
+                status: 'accepted',
+                commission_pct: 15.00,
+                commission_amount: Math.round(((r.total_amount || 0) * 15) / 100),
+                caterer_note: note || 'Accepted by caterer',
+                updated_at: new Date().toISOString(),
+              }
+            : r
+        )
+      );
+    }
   };
 
-  const handleRejectRequest = (bookingId: string, note?: string) => {
-    setIncomingRequests((prev) =>
-      prev.map((r) =>
-        r.id === bookingId
-          ? {
-              ...r,
-              status: 'rejected',
-              caterer_note: note || 'Declined due to scheduling',
-              updated_at: new Date().toISOString(),
-            }
-          : r
-      )
-    );
+  const handleRejectRequest = async (bookingId: string, note?: string) => {
+    try {
+      await rejectBooking(bookingId, note);
+      await loadBookings();
+    } catch (err) {
+      console.error('Failed to reject booking via API, applying local update:', err);
+      setIncomingRequests((prev) =>
+        prev.map((r) =>
+          r.id === bookingId
+            ? {
+                ...r,
+                status: 'rejected',
+                caterer_note: note || 'Declined due to scheduling',
+                updated_at: new Date().toISOString(),
+              }
+            : r
+        )
+      );
+    }
   };
+
+  if (loadingCaterer) {
+    return (
+      <div className="flex flex-col items-center justify-center p-16 space-y-3">
+        <Loader2 className="h-8 w-8 animate-spin text-emerald-600" />
+        <span className="text-xs font-semibold text-slate-500">Loading your catering business profile...</span>
+      </div>
+    );
+  }
+
+  if (!user?.id) {
+    return (
+      <div className="flex flex-col items-center justify-center p-16 space-y-3 text-center">
+        <p className="text-sm font-semibold text-slate-700">Please sign in to access your caterer dashboard.</p>
+      </div>
+    );
+  }
 
   if (!caterer) {
     return (
       <CatererOnboardingForm
-        ownerId={user?.id || 'mock-owner'}
+        ownerId={user.id}
         onSuccess={(created) => setCaterer(created)}
       />
     );
@@ -158,9 +195,12 @@ export const CatererDashboard: React.FC = () => {
                 <span className="rounded-full bg-amber-200 px-2 py-0.5 text-[10px] font-bold text-amber-900 uppercase">
                   Pending Verification
                 </span>
+                <span className="rounded-full bg-slate-200 px-2 py-0.5 text-[10px] font-semibold text-slate-700">
+                  {caterer.city}
+                </span>
               </div>
               <p className="text-xs text-amber-800 mt-0.5">
-                Your FSSAI license (<b>{caterer.fssai_number}</b>) is being reviewed by CaterConnect Admin.
+                Your FSSAI license (<b>{caterer.fssai_number}</b>) in {caterer.city} is being reviewed by CaterConnect Admin.
               </p>
             </div>
           </div>
@@ -174,9 +214,14 @@ export const CatererDashboard: React.FC = () => {
               <CheckCircle2 className="h-5 w-5" />
             </div>
             <div>
-              <h1 className="text-base font-bold text-slate-900">{caterer.business_name}</h1>
+              <div className="flex items-center gap-2">
+                <h1 className="text-base font-bold text-slate-900">{caterer.business_name}</h1>
+                <span className="rounded-full bg-emerald-100 text-emerald-800 text-[10px] font-bold px-2 py-0.5">
+                  {caterer.city}
+                </span>
+              </div>
               <p className="text-xs text-emerald-800">
-                Verified FSSAI: {caterer.fssai_number} • Visible to customers in Tirupati
+                Verified FSSAI: {caterer.fssai_number} • Visible to customers in {caterer.city || 'all service areas'}
               </p>
             </div>
           </div>
@@ -194,7 +239,12 @@ export const CatererDashboard: React.FC = () => {
           }`}
         >
           <Clock className="h-4 w-4" />
-          <span>Incoming Requests ({pendingRequestsCount})</span>
+          <span>Orders & History ({incomingRequests.length})</span>
+          {pendingRequestsCount > 0 && (
+            <span className="rounded-full bg-amber-500 text-white text-[10px] px-1.5 py-0.2 font-bold animate-pulse">
+              {pendingRequestsCount} new
+            </span>
+          )}
         </button>
         <button
           onClick={() => setActiveTab('packages')}
@@ -205,7 +255,40 @@ export const CatererDashboard: React.FC = () => {
           }`}
         >
           <Utensils className="h-4 w-4" />
-          <span>Menu Packages ({packages.length})</span>
+          <span>Combo Packages ({packages.length})</span>
+        </button>
+        <button
+          onClick={() => setActiveTab('menu_items')}
+          className={`flex items-center gap-2 border-b-2 px-4 py-2.5 text-xs sm:text-sm font-semibold transition ${
+            activeTab === 'menu_items'
+              ? 'border-emerald-600 text-emerald-700'
+              : 'border-transparent text-slate-600 hover:text-slate-900'
+          }`}
+        >
+          <Utensils className="h-4 w-4 text-amber-600" />
+          <span>Master Dishes Catalog</span>
+        </button>
+        <button
+          onClick={() => setActiveTab('messages')}
+          className={`flex items-center gap-2 border-b-2 px-4 py-2.5 text-xs sm:text-sm font-semibold transition ${
+            activeTab === 'messages'
+              ? 'border-emerald-600 text-emerald-700'
+              : 'border-transparent text-slate-600 hover:text-slate-900'
+          }`}
+        >
+          <MessageSquare className="h-4 w-4 text-amber-600" />
+          <span>Customer Chats</span>
+        </button>
+        <button
+          onClick={() => setActiveTab('policies')}
+          className={`flex items-center gap-2 border-b-2 px-4 py-2.5 text-xs sm:text-sm font-semibold transition ${
+            activeTab === 'policies'
+              ? 'border-emerald-600 text-emerald-700'
+              : 'border-transparent text-slate-600 hover:text-slate-900'
+          }`}
+        >
+          <Settings className="h-4 w-4" />
+          <span>Order Policies</span>
         </button>
         <button
           onClick={() => setActiveTab('calendar')}
@@ -245,6 +328,24 @@ export const CatererDashboard: React.FC = () => {
           packages={packages}
           onAddPackageClick={() => setShowCreateModal(true)}
           onToggleActive={handleToggleActive}
+        />
+      )}
+
+      {activeTab === 'menu_items' && (
+        <MenuItemsManager catererId={caterer.id} />
+      )}
+
+      {activeTab === 'messages' && (
+        <PartnerChatHub />
+      )}
+
+      {activeTab === 'policies' && (
+        <CatererOrderSettings
+          catererId={caterer.id}
+          initialMinGuests={caterer.min_guests}
+          initialMaxGuests={caterer.max_guests}
+          initialLeadDays={caterer.lead_time_days}
+          initialAllowsCustomCombo={caterer.allows_custom_combo}
         />
       )}
 

@@ -12,7 +12,9 @@ describe('Notification Service Integration (WhatsApp & SMS)', () => {
 
   afterAll(async () => {
     await app.close();
-    await pgPool.end();
+    if (!(pgPool as any).ending) {
+      await pgPool.end();
+    }
   });
 
   it('responds with 200 on /health', async () => {
@@ -71,6 +73,10 @@ describe('Notification Service Integration (WhatsApp & SMS)', () => {
     const logsRes = await app.inject({
       method: 'GET',
       url: `/api/notify/logs/${testBookingId}`,
+      headers: {
+        'x-user-id': 'admin-uuid-001',
+        'x-user-role': 'admin',
+      },
     });
     expect(logsRes.statusCode).toBe(200);
     expect(logsRes.json().logs.length).toBeGreaterThanOrEqual(1);

@@ -1,24 +1,105 @@
 import Fastify from 'fastify';
 import fastifyCors from '@fastify/cors';
+import fastifyHelmet from '@fastify/helmet';
 import fastifyWebsocket from '@fastify/websocket';
 import { pgPool } from './db';
-import { sendMessageSchema, UserRole } from '@caterconnect/shared';
+import {
+  sendMessageSchema,
+  UserRole,
+  validateEnv,
+  createDbEnvSchema,
+  buildCorsOptions,
+  registerCentralizedErrorHandler,
+  loggerRedactionConfig,
+  getAuthenticatedUser,
+} from '@caterconnect/shared';
 
 export function buildChatServer() {
-  const server = Fastify({ logger: false });
+  const env = validateEnv(createDbEnvSchema(), process.env);
+  const server = Fastify({
+    logger: {
+      redact: loggerRedactionConfig,
+    },
+    bodyLimit: 1048576,
+    connectionTimeout: 10000,
+    requestTimeout: 15000,
+  });
 
-  server.register(fastifyCors, { origin: true });
+  registerCentralizedErrorHandler(server, 'chat-service');
+
+  server.addHook('onClose', async () => {
+    if (!(pgPool as any).ending) {
+      await pgPool.end();
+    }
+  });
+
+  server.register(fastifyHelmet, { contentSecurityPolicy: false });
+  server.register(fastifyCors, buildCorsOptions(env.ALLOWED_ORIGINS, env.NODE_ENV));
   server.register(fastifyWebsocket);
 
-  // Health check
+  // Helper to assert caller is a participant in the chat thread or admin
+  const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+  async function assertThreadParticipant(
+    threadId: string,
+    actorId: string,
+    actorRole: string
+  ): Promise<{ authorized: boolean; thread?: any; statusCode?: number; error?: string }> {
+    if (!threadId || !UUID_REGEX.test(threadId)) {
+      return { authorized: false, statusCode: 404, error: 'Chat thread not found' };
+    }
+
+    const tRes = await pgPool.query(
+      `SELECT t.id, t.customer_id, t.caterer_id, c.owner_id as caterer_owner_id
+       FROM chat_svc.chat_threads t
+       JOIN caterer_svc.caterers c ON t.caterer_id = c.id
+       WHERE t.id = $1 LIMIT 1`,
+      [threadId]
+    );
+
+    if (tRes.rows.length === 0) {
+      return { authorized: false, statusCode: 404, error: 'Chat thread not found' };
+    }
+
+    const thread = tRes.rows[0];
+    if (
+      actorRole !== 'admin' &&
+      actorId !== thread.customer_id &&
+      actorId !== thread.caterer_owner_id
+    ) {
+      return {
+        authorized: false,
+        statusCode: 403,
+        error: 'Forbidden: You are not an authorized participant in this chat thread',
+      };
+    }
+
+    return { authorized: true, thread };
+  }
+
+  // Health & Readiness checks
   server.get('/health', async () => ({ status: 'ok', service: 'chat-service' }));
+  server.get('/ready', async (_req, reply) => {
+    try {
+      await pgPool.query('SELECT 1');
+      return { status: 'ready', database: 'connected', service: 'chat-service' };
+    } catch {
+      return reply.status(503).send({ status: 'not_ready', database: 'disconnected', service: 'chat-service' });
+    }
+  });
 
   // Get or Create thread for a booking
   server.get('/api/chat/threads/booking/:bookingId', async (req, reply) => {
     try {
       const { bookingId } = req.params as { bookingId: string };
-      const userId = req.headers['x-user-id'] as string;
-      const userRole = (req.headers['x-user-role'] as string) || 'customer';
+      const user = getAuthenticatedUser(req);
+      if (!user) {
+        return reply.status(401).send({ error: 'Unauthorized: Authentication required' });
+      }
+
+      if (!bookingId || !UUID_REGEX.test(bookingId)) {
+        return reply.status(404).send({ error: 'Booking not found' });
+      }
 
       // 1. Fetch booking participants
       const bRes = await pgPool.query(
@@ -37,14 +118,14 @@ export function buildChatServer() {
 
       // 2. Authorization check: user must be customer, caterer owner, or admin
       if (
-        userRole !== 'admin' &&
-        userId !== booking.customer_id &&
-        userId !== booking.caterer_owner_id
+        user.role !== 'admin' &&
+        user.userId !== booking.customer_id &&
+        user.userId !== booking.caterer_owner_id
       ) {
         return reply.status(403).send({ error: 'Forbidden: You are not a participant in this booking' });
       }
 
-      // 3. Find or create thread
+      // 3. Find or create thread (upsert-safe with ON CONFLICT)
       let threadRes = await pgPool.query(
         'SELECT * FROM chat_svc.chat_threads WHERE booking_id = $1 LIMIT 1',
         [bookingId]
@@ -54,6 +135,7 @@ export function buildChatServer() {
         threadRes = await pgPool.query(
           `INSERT INTO chat_svc.chat_threads (booking_id, customer_id, caterer_id)
            VALUES ($1, $2, $3)
+           ON CONFLICT (booking_id) DO UPDATE SET last_message_at = chat_threads.last_message_at
            RETURNING *`,
           [bookingId, booking.customer_id, booking.caterer_id]
         );
@@ -73,7 +155,7 @@ export function buildChatServer() {
       });
     } catch (err: any) {
       console.error('GET /threads/booking error:', err);
-      return reply.status(500).send({ error: err.message });
+      return reply.status(500).send({ error: 'Internal server error' });
     }
   });
 
@@ -81,6 +163,15 @@ export function buildChatServer() {
   server.get('/api/chat/threads/:threadId/messages', async (req, reply) => {
     try {
       const { threadId } = req.params as { threadId: string };
+      const user = getAuthenticatedUser(req);
+      if (!user) {
+        return reply.status(401).send({ error: 'Unauthorized: Authentication required' });
+      }
+
+      const check = await assertThreadParticipant(threadId, user.userId, user.role);
+      if (!check.authorized) {
+        return reply.status(check.statusCode || 403).send({ error: check.error });
+      }
 
       const mRes = await pgPool.query(
         `SELECT m.id, m.thread_id, m.sender_id, m.sender_role, m.message, m.is_read, m.created_at, u.full_name as sender_name
@@ -105,7 +196,7 @@ export function buildChatServer() {
       });
     } catch (err: any) {
       console.error('GET /messages error:', err);
-      return reply.status(500).send({ error: err.message });
+      return reply.status(500).send({ error: 'Internal server error' });
     }
   });
 
@@ -113,11 +204,14 @@ export function buildChatServer() {
   server.post('/api/chat/threads/:threadId/messages', async (req, reply) => {
     try {
       const { threadId } = req.params as { threadId: string };
-      const senderId = (req.headers['x-user-id'] as string) || (req.body as any).senderId;
-      const senderRole = ((req.headers['x-user-role'] as string) || (req.body as any).senderRole || 'customer') as UserRole;
+      const user = getAuthenticatedUser(req);
+      if (!user) {
+        return reply.status(401).send({ error: 'Unauthorized: Authentication required' });
+      }
 
-      if (!senderId) {
-        return reply.status(401).send({ error: 'Missing sender identification' });
+      const check = await assertThreadParticipant(threadId, user.userId, user.role);
+      if (!check.authorized) {
+        return reply.status(check.statusCode || 403).send({ error: check.error });
       }
 
       const parseResult = sendMessageSchema.safeParse(req.body);
@@ -134,7 +228,7 @@ export function buildChatServer() {
         `INSERT INTO chat_svc.chat_messages (thread_id, sender_id, sender_role, message)
          VALUES ($1, $2, $3, $4)
          RETURNING *`,
-        [threadId, senderId, senderRole, message]
+        [threadId, user.userId, user.role, message]
       );
 
       // Update thread timestamp
@@ -157,13 +251,186 @@ export function buildChatServer() {
       });
     } catch (err: any) {
       console.error('POST /messages error:', err);
-      return reply.status(500).send({ error: err.message });
+      return reply.status(500).send({ error: 'Internal server error' });
+    }
+  });
+
+  // Dedicated Chat Inbox for Caterers: List all active chat conversations across their bookings
+  server.get('/api/chat/caterer/inbox', async (req, reply) => {
+    try {
+      const user = getAuthenticatedUser(req);
+      if (!user) {
+        return reply.status(401).send({ error: 'Unauthorized: Authentication required' });
+      }
+
+      // Assert caterer identity or admin
+      const cRes = await pgPool.query('SELECT id FROM caterer_svc.caterers WHERE owner_id = $1', [user.userId]);
+      if (cRes.rows.length === 0 && user.role !== 'admin') {
+        return reply.status(403).send({ error: 'Forbidden: No caterer business associated with this account' });
+      }
+
+      const catererId = cRes.rows[0]?.id;
+
+      let sql = `
+        SELECT 
+          t.id as thread_id,
+          t.booking_id,
+          t.last_message_at,
+          t.created_at as thread_created_at,
+          u.id as customer_id,
+          u.full_name as customer_name,
+          u.phone as customer_phone,
+          b.status as booking_status,
+          b.event_date,
+          b.guest_count,
+          b.venue_address,
+          COALESCE(p.name, b.custom_combo_name, 'Custom Feast Combo') as package_name,
+          (
+            SELECT message 
+            FROM chat_svc.chat_messages m 
+            WHERE m.thread_id = t.id 
+            ORDER BY m.created_at DESC 
+            LIMIT 1
+          ) as last_message_text,
+          (
+            SELECT sender_role 
+            FROM chat_svc.chat_messages m 
+            WHERE m.thread_id = t.id 
+            ORDER BY m.created_at DESC 
+            LIMIT 1
+          ) as last_message_sender_role
+        FROM chat_svc.chat_threads t
+        JOIN order_svc.bookings b ON t.booking_id = b.id
+        JOIN auth_svc.users u ON t.customer_id = u.id
+        LEFT JOIN caterer_svc.packages p ON b.package_id = p.id
+      `;
+
+      const params: any[] = [];
+      if (user.role !== 'admin') {
+        params.push(catererId);
+        sql += ` WHERE t.caterer_id = $1`;
+      }
+      sql += ` ORDER BY t.last_message_at DESC NULLS LAST, t.created_at DESC`;
+
+      const res = await pgPool.query(sql, params);
+
+      return reply.send({
+        inbox: res.rows.map((r) => ({
+          threadId: r.thread_id,
+          bookingId: r.booking_id,
+          bookingStatus: r.booking_status,
+          eventDate: r.event_date,
+          guestCount: r.guest_count,
+          venueAddress: r.venue_address,
+          packageName: r.package_name,
+          customer: {
+            id: r.customer_id,
+            name: r.customer_name,
+            phone: r.customer_phone,
+          },
+          lastMessage: r.last_message_text
+            ? {
+                text: r.last_message_text,
+                senderRole: r.last_message_sender_role,
+              }
+            : null,
+          lastMessageAt: r.last_message_at || r.thread_created_at,
+        })),
+      });
+    } catch (err: any) {
+      console.error('GET /api/chat/caterer/inbox error:', err);
+      return reply.status(500).send({ error: 'Failed to retrieve caterer inbox' });
+    }
+  });
+
+  // Dedicated Chat Inbox for Customers: List all active caterer conversations
+  server.get('/api/chat/customer/inbox', async (req, reply) => {
+    try {
+      const user = getAuthenticatedUser(req);
+      if (!user) {
+        return reply.status(401).send({ error: 'Unauthorized: Authentication required' });
+      }
+
+      const sql = `
+        SELECT 
+          t.id as thread_id,
+          t.booking_id,
+          t.last_message_at,
+          t.created_at as thread_created_at,
+          c.id as caterer_id,
+          c.business_name,
+          c.city,
+          b.status as booking_status,
+          b.event_date,
+          b.guest_count,
+          (
+            SELECT message 
+            FROM chat_svc.chat_messages m 
+            WHERE m.thread_id = t.id 
+            ORDER BY m.created_at DESC 
+            LIMIT 1
+          ) as last_message_text,
+          (
+            SELECT sender_role 
+            FROM chat_svc.chat_messages m 
+            WHERE m.thread_id = t.id 
+            ORDER BY m.created_at DESC 
+            LIMIT 1
+          ) as last_message_sender_role
+        FROM chat_svc.chat_threads t
+        JOIN order_svc.bookings b ON t.booking_id = b.id
+        JOIN caterer_svc.caterers c ON t.caterer_id = c.id
+        WHERE t.customer_id = $1
+        ORDER BY t.last_message_at DESC NULLS LAST, t.created_at DESC
+      `;
+
+      const res = await pgPool.query(sql, [user.userId]);
+
+      return reply.send({
+        inbox: res.rows.map((r) => ({
+          threadId: r.thread_id,
+          bookingId: r.booking_id,
+          bookingStatus: r.booking_status,
+          eventDate: r.event_date,
+          guestCount: r.guest_count,
+          caterer: {
+            id: r.caterer_id,
+            businessName: r.business_name,
+            city: r.city,
+          },
+          lastMessage: r.last_message_text
+            ? {
+                text: r.last_message_text,
+                senderRole: r.last_message_sender_role,
+              }
+            : null,
+          lastMessageAt: r.last_message_at || r.thread_created_at,
+        })),
+      });
+    } catch (err: any) {
+      console.error('GET /api/chat/customer/inbox error:', err);
+      return reply.status(500).send({ error: 'Failed to retrieve customer inbox' });
     }
   });
 
   // WebSocket connection for real-time live messaging
   server.register(async function (fastify) {
-    fastify.get('/api/chat/ws/:threadId', { websocket: true }, (socket, req) => {
+    fastify.get('/api/chat/ws/:threadId', { websocket: true }, async (socket, req) => {
+      const user = getAuthenticatedUser(req);
+      if (!user) {
+        socket.send(JSON.stringify({ event: 'error', message: 'Unauthorized: Authentication required' }));
+        socket.close(1008, 'Unauthorized');
+        return;
+      }
+
+      const { threadId } = req.params as { threadId: string };
+      const check = await assertThreadParticipant(threadId, user.userId, user.role);
+      if (!check.authorized) {
+        socket.send(JSON.stringify({ event: 'error', message: check.error || 'Forbidden: Access denied' }));
+        socket.close(1008, 'Forbidden');
+        return;
+      }
+
       socket.on('message', async (data) => {
         try {
           const parsed = JSON.parse(data.toString());
@@ -180,7 +447,7 @@ export function buildChatServer() {
 
 if (process.env.NODE_ENV !== 'test') {
   const app = buildChatServer();
-  const PORT = parseInt(process.env.PORT || '4006', 10);
+  const PORT = parseInt(process.env.CHAT_PORT || (process.env.PORT && process.env.PORT !== '8080' ? process.env.PORT : '4006'), 10);
   app.listen({ port: PORT, host: '0.0.0.0' }, (err, address) => {
     if (err) {
       console.error(err);

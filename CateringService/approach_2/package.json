@@ -6,9 +6,15 @@
   "scripts": {
     "build": "pnpm -r run build",
     "test": "pnpm -r run test",
-    "typecheck": "pnpm -r run typecheck"
+    "typecheck": "pnpm -r run typecheck",
+    "db:migrate:up": "tsx database/migrator.ts up",
+    "db:migrate:down": "tsx database/migrator.ts down",
+    "db:migrate:status": "tsx database/migrator.ts status",
+    "db:seed": "tsx database/seed.ts"
   },
   "devDependencies": {
+    "@types/pg": "^8.23.1",
+    "pg": "^8.23.1",
     "tsx": "^4.19.2"
   }
 }

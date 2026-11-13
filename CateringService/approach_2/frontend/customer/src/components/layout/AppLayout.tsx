@@ -10,7 +10,7 @@ export const AppLayout: React.FC = () => {
         <Outlet />
       </main>
       <footer className="border-t border-slate-200 bg-white py-6 text-center text-xs text-slate-500">
-        CaterConnect &copy; 2026. Two-sided catering marketplace (Tirupati, AP).
+        CaterConnect &copy; 2026. Pan-India Catering &amp; Event Feast Marketplace.
       </footer>
     </div>
   );
