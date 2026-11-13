@@ -266,6 +266,7 @@ export const IncomingRequestsQueue: React.FC<Props> = ({
       {chatBooking && (
         <PartnerChatDrawer
           bookingId={chatBooking.id}
+          customerName={chatBooking.customer_name || 'Event Host'}
           bookingSummary={{
             venueAddress: chatBooking.venue_address,
             eventDate: chatBooking.event_date,

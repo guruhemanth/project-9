@@ -55,17 +55,8 @@ export const ChatDrawer: React.FC<ChatDrawerProps> = ({
           activeThread = res.thread;
           setThread(activeThread);
         } catch (fetchErr: any) {
-          console.warn('Backend chat service fetch failed, using fallback thread:', fetchErr.message);
-          // Fallback mock thread for offline/demo scenarios
-          activeThread = {
-            id: `thread-${bookingId.slice(0, 8)}`,
-            bookingId,
-            customerId: user?.id || 'demo-customer',
-            catererId: 'caterer-1',
-            lastMessageAt: new Date().toISOString(),
-            createdAt: new Date().toISOString(),
-          };
-          setThread(activeThread);
+          console.warn('Backend chat service fetch failed:', fetchErr.message);
+          setThread(null);
         }
       }
 

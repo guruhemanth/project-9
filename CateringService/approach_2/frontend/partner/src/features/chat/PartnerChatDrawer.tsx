@@ -55,16 +55,9 @@ export const PartnerChatDrawer: React.FC<PartnerChatDrawerProps> = ({
           activeThread = res.thread;
           setThread(activeThread);
         } catch (fetchErr: any) {
-          console.warn('Chat service fetch failed, using partner fallback thread:', fetchErr.message);
-          activeThread = {
-            id: `thread-${bookingId.slice(0, 8)}`,
-            bookingId,
-            customerId: 'customer-1',
-            catererId: user?.id || 'caterer-1',
-            lastMessageAt: new Date().toISOString(),
-            createdAt: new Date().toISOString(),
-          };
-          setThread(activeThread);
+          console.warn('Chat service fetch failed:', fetchErr.message);
+          // Do not create non-UUID thread strings; let the drawer report the issue cleanly or wait for backend creation
+          setThread(null);
         }
       }
 
