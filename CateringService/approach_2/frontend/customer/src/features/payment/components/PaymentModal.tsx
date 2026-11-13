@@ -12,7 +12,9 @@ import {
   Receipt,
 } from 'lucide-react';
 import { formatPaiseToINR, formatIndianDate } from '@/lib/formatters';
-import { createPaymentOrder, simulateWebhookCaptured } from '../api';
+import { createPaymentOrder, verifyPaymentSignature } from '../api';
+import { loadRazorpayScript } from '@/lib/razorpay';
+import { useAuth } from '@/lib/auth/AuthContext';
 import type { Booking } from '@/types/database';
 
 interface Props {
@@ -29,10 +31,13 @@ interface Props {
 }
 
 export const PaymentModal: React.FC<Props> = ({ booking, onClose, onPaymentSuccess }) => {
+  const { user } = useAuth();
   const totalPaise = (booking as any).total_amount_paise || booking.total_amount || 3500000;
   const advancePercentage = 25; // 25% to lock the deal
   const advancePaise = Math.round((totalPaise * advancePercentage) / 100);
   const remainingPaise = totalPaise - advancePaise;
+  const platformFeePaise = Math.round((totalPaise * 15) / 100);
+  const catererUpfrontPayoutPaise = Math.max(0, advancePaise - platformFeePaise);
 
   const [paymentOption, setPaymentOption] = useState<'full' | 'advance'>('advance');
   const [processing, setProcessing] = useState(false);
@@ -51,47 +56,88 @@ export const PaymentModal: React.FC<Props> = ({ booking, onClose, onPaymentSucce
     } catch (_) {}
   }
 
+  const feastTitle =
+    booking.custom_combo_name || booking.package_name || 'Catering Feast Package';
+
   const handlePay = async () => {
     setError(null);
     setProcessing(true);
-    setStatusMessage('Creating Razorpay order on server...');
+    setStatusMessage('Loading secure payment gateway...');
 
     try {
+      const isLoaded = await loadRazorpayScript();
+      if (!isLoaded || !(window as any).Razorpay) {
+        throw new Error('Failed to load Razorpay payment SDK. Please check your internet connection.');
+      }
+
+      setStatusMessage('Creating Razorpay order on server...');
       const order = await createPaymentOrder(booking.id, paymentOption, advancePercentage);
-      if (!order) {
+      if (!order || !order.orderId) {
         throw new Error('Failed to create Razorpay payment order');
       }
 
-      setStatusMessage('Awaiting Razorpay payment completion...');
+      setStatusMessage('Opening Razorpay Checkout...');
 
-      // Simulated checkout modal flow
-      setTimeout(async () => {
-        setStatusMessage('Verifying Razorpay webhook signature...');
-        // Simulates verified webhook callback marking booking paid in database
-        const updated = await simulateWebhookCaptured(
-          order.order_id,
-          `pay_${Date.now()}`,
-          amountToCharge
-        );
+      const options = {
+        key: order.keyId,
+        amount: order.amountPaise,
+        currency: order.currency || 'INR',
+        name: 'CaterConnect Marketplace',
+        description: `${feastTitle} (${paymentOption === 'advance' ? '25% Advance Deal Lock' : 'Full Payment'})`,
+        order_id: order.orderId,
+        prefill: {
+          name: user?.fullName || undefined,
+          contact: user?.phone || undefined,
+        },
+        theme: {
+          color: '#059669',
+        },
+        modal: {
+          ondismiss: () => {
+            setProcessing(false);
+            setStatusMessage(null);
+          },
+        },
+        handler: async (response: any) => {
+          try {
+            setStatusMessage('Verifying Razorpay payment signature...');
+            const verifyRes = await verifyPaymentSignature({
+              bookingId: booking.id,
+              razorpayOrderId: response.razorpay_order_id || order.orderId,
+              razorpayPaymentId: response.razorpay_payment_id,
+              razorpaySignature: response.razorpay_signature,
+            });
 
-        if (updated) {
-          setStatusMessage('Payment verified! Deal confirmed.');
-          setTimeout(() => {
-            onPaymentSuccess({ ...booking, status: 'paid', payment_type: paymentOption } as any);
-          }, 800);
-        } else {
-          setError('Webhook signature verification failed');
-          setProcessing(false);
-        }
-      }, 1200);
+            if (verifyRes.success) {
+              setStatusMessage('Payment verified! Deal confirmed.');
+              setTimeout(() => {
+                onPaymentSuccess(verifyRes.booking || ({ ...booking, status: 'paid', payment_type: paymentOption } as any));
+              }, 800);
+            } else {
+              throw new Error(verifyRes.message || 'Signature verification failed');
+            }
+          } catch (verifyErr: any) {
+            setError(verifyErr?.message || 'Payment signature verification failed');
+            setProcessing(false);
+            setStatusMessage(null);
+          }
+        },
+      };
+
+      const rzp = new (window as any).Razorpay(options);
+      rzp.on('payment.failed', (failRes: any) => {
+        setError(failRes?.error?.description || 'Payment was declined or failed.');
+        setProcessing(false);
+        setStatusMessage(null);
+      });
+
+      rzp.open();
     } catch (err: any) {
       setError(err?.message || 'Payment initiation failed');
       setProcessing(false);
+      setStatusMessage(null);
     }
   };
-
-  const feastTitle =
-    booking.custom_combo_name || booking.package_name || 'Catering Feast Package';
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-xs">
@@ -261,9 +307,19 @@ export const PaymentModal: React.FC<Props> = ({ booking, onClose, onPaymentSucce
           </div>
 
           {paymentOption === 'advance' && (
-            <div className="flex justify-between text-slate-500 text-[11px] pt-1 border-t border-slate-200">
-              <span>Balance Due to Caterer on Event Day</span>
-              <span className="font-semibold text-slate-700">{formatPaiseToINR(remainingPaise)}</span>
+            <div className="rounded-lg bg-emerald-50/70 p-2.5 space-y-1.5 text-[11px] text-emerald-900 border border-emerald-100">
+              <div className="flex justify-between">
+                <span>• Platform Service Commission (15% of total order):</span>
+                <span className="font-semibold">{formatPaiseToINR(platformFeePaise)}</span>
+              </div>
+              <div className="flex justify-between">
+                <span>• Upfront Advance to Caterer (10% of total):</span>
+                <span className="font-semibold">{formatPaiseToINR(catererUpfrontPayoutPaise)}</span>
+              </div>
+              <div className="flex justify-between font-bold text-slate-800 pt-1 border-t border-emerald-200/60">
+                <span>• Remaining Balance Due at Venue (75%):</span>
+                <span>{formatPaiseToINR(remainingPaise)}</span>
+              </div>
             </div>
           )}
 
