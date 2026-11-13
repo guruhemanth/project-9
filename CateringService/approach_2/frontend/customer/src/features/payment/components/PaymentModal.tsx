@@ -40,6 +40,7 @@ export const PaymentModal: React.FC<Props> = ({ booking, onClose, onPaymentSucce
   const catererUpfrontPayoutPaise = Math.max(0, advancePaise - platformFeePaise);
 
   const [paymentOption, setPaymentOption] = useState<'full' | 'advance'>('advance');
+  const [customVpa, setCustomVpa] = useState('');
   const [processing, setProcessing] = useState(false);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -78,7 +79,7 @@ export const PaymentModal: React.FC<Props> = ({ booking, onClose, onPaymentSucce
 
       setStatusMessage('Opening Razorpay Checkout...');
 
-      const options = {
+      const options: any = {
         key: order.keyId,
         amount: order.amountPaise,
         currency: order.currency || 'INR',
@@ -88,7 +89,9 @@ export const PaymentModal: React.FC<Props> = ({ booking, onClose, onPaymentSucce
         prefill: {
           name: user?.fullName || undefined,
           contact: user?.phone || undefined,
+          ...(customVpa.trim() ? { vpa: customVpa.trim() } : {}),
         },
+        ...(customVpa.trim() ? { method: { upi: true } } : {}),
         theme: {
           color: '#059669',
         },
@@ -279,6 +282,23 @@ export const PaymentModal: React.FC<Props> = ({ booking, onClose, onPaymentSucce
               </div>
             </div>
           </div>
+        </div>
+
+        {/* Optional Custom UPI ID (VPA) Input Field */}
+        <div className="mt-3 rounded-xl border border-slate-200 bg-white p-3 shadow-2xs">
+          <label className="block text-xs font-semibold text-slate-700 mb-1">
+            Pay via specific UPI ID / VPA (Optional)
+          </label>
+          <input
+            type="text"
+            value={customVpa}
+            onChange={(e) => setCustomVpa(e.target.value)}
+            placeholder="e.g. yourname@okhdfcbank or success@razorpay (Test Mode)"
+            className="w-full rounded-lg border border-slate-200 py-2 px-3 text-xs focus:border-emerald-600 focus:outline-none focus:ring-1 focus:ring-emerald-600"
+          />
+          <p className="mt-1 text-[11px] text-slate-500">
+            Tip: Leave empty to scan QR Code or choose Cards/NetBanking. Enter <b>success@razorpay</b> to auto-simulate approval in Test Mode.
+          </p>
         </div>
 
         {/* Transparent Cost Sheet & Escrow Ledger */}
