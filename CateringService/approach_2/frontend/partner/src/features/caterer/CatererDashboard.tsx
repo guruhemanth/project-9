@@ -228,7 +228,12 @@ export const CatererDashboard: React.FC = () => {
           }`}
         >
           <Clock className="h-4 w-4" />
-          <span>Incoming Requests ({pendingRequestsCount})</span>
+          <span>Orders & History ({incomingRequests.length})</span>
+          {pendingRequestsCount > 0 && (
+            <span className="rounded-full bg-amber-500 text-white text-[10px] px-1.5 py-0.2 font-bold animate-pulse">
+              {pendingRequestsCount} new
+            </span>
+          )}
         </button>
         <button
           onClick={() => setActiveTab('packages')}

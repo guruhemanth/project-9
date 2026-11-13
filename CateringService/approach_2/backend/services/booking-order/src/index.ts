@@ -91,7 +91,7 @@ export function buildBookingServer() {
         return reply.status(400).send({ error: 'Please add and verify your phone number before placing a booking.' });
       }
 
-      const { catererId, packageId, eventDate, eventTime, guestCount, venueAddress, city, state, pincode, specialRequests } =
+      const { catererId, packageId, customComboName, customizedItems, eventDate, eventTime, guestCount, venueAddress, city, state, pincode, specialRequests } =
         parseResult.data;
 
       // Check caterer availability for eventDate
@@ -127,28 +127,60 @@ export function buildBookingServer() {
         }
       }
 
-      // Verify package price to calculate total_amount_paise
-      const pkgRes = await pgPool.query(
-        'SELECT price_per_plate_paise FROM caterer_svc.packages WHERE id = $1 AND caterer_id = $2',
-        [packageId, catererId]
-      );
+      let totalAmountPaise = 0;
+      let effectiveCustomizedItems = customizedItems || [];
 
-      if (pkgRes.rows.length === 0) {
-        return reply.status(404).send({ error: 'Package not found for this caterer' });
+      // Case 1: Customized item-by-item feast combo
+      if (customizedItems && customizedItems.length > 0) {
+        const itemIds = customizedItems.map((i) => i.id).filter(Boolean);
+        const itemsRes = await pgPool.query(
+          `SELECT id, name, category, price_paise, is_veg 
+           FROM caterer_svc.menu_items 
+           WHERE caterer_id = $1 AND id = ANY($2::uuid[])`,
+          [catererId, itemIds]
+        );
+
+        if (itemsRes.rows.length === 0) {
+          return reply.status(400).send({ error: 'None of the selected custom items were found for this caterer.' });
+        }
+
+        effectiveCustomizedItems = itemsRes.rows.map((r) => ({
+          id: r.id,
+          name: r.name,
+          category: r.category,
+          pricePaise: r.price_paise,
+          isVeg: r.is_veg,
+        }));
+
+        const pricePerPlate = itemsRes.rows.reduce((sum, item) => sum + item.price_paise, 0);
+        totalAmountPaise = pricePerPlate * guestCount;
       }
+      // Case 2: Standard pre-set package
+      else if (packageId) {
+        const pkgRes = await pgPool.query(
+          'SELECT price_per_plate_paise FROM caterer_svc.packages WHERE id = $1 AND caterer_id = $2',
+          [packageId, catererId]
+        );
 
-      const pricePerPlate = pkgRes.rows[0].price_per_plate_paise;
-      const totalAmountPaise = pricePerPlate * guestCount;
+        if (pkgRes.rows.length === 0) {
+          return reply.status(404).send({ error: 'Package not found for this caterer' });
+        }
+
+        const pricePerPlate = pkgRes.rows[0].price_per_plate_paise;
+        totalAmountPaise = pricePerPlate * guestCount;
+      } else {
+        return reply.status(400).send({ error: 'Either packageId or customizedItems must be provided.' });
+      }
 
       const insertRes = await pgPool.query(
         `INSERT INTO order_svc.bookings 
-         (customer_id, caterer_id, package_id, event_date, event_time, guest_count, venue_address, city, state, pincode, special_requests, total_amount_paise, status)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'requested')
+         (customer_id, caterer_id, package_id, event_date, event_time, guest_count, venue_address, city, state, pincode, special_requests, total_amount_paise, customized_items, custom_combo_name, status)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, 'requested')
          RETURNING *`,
         [
           customerId,
           catererId,
-          packageId,
+          packageId || null,
           eventDate,
           eventTime,
           guestCount,
@@ -158,6 +190,8 @@ export function buildBookingServer() {
           pincode || null,
           specialRequests || null,
           totalAmountPaise,
+          JSON.stringify(effectiveCustomizedItems),
+          customComboName || (packageId ? null : 'Custom Feast Combo'),
         ]
       );
 
@@ -207,10 +241,10 @@ export function buildBookingServer() {
     const customerId = authUser.userId;
 
     const res = await pgPool.query(
-      `SELECT b.*, c.business_name, p.name as package_name
+      `SELECT b.*, c.business_name, c.city as caterer_city, COALESCE(p.name, b.custom_combo_name, 'Custom Feast Combo') as package_name
        FROM order_svc.bookings b
        JOIN caterer_svc.caterers c ON b.caterer_id = c.id
-       JOIN caterer_svc.packages p ON b.package_id = p.id
+       LEFT JOIN caterer_svc.packages p ON b.package_id = p.id
        WHERE b.customer_id = $1
        ORDER BY b.created_at DESC`,
       [customerId]
@@ -236,10 +270,10 @@ export function buildBookingServer() {
     }
 
     const res = await pgPool.query(
-      `SELECT b.*, p.name as package_name,
+      `SELECT b.*, COALESCE(p.name, b.custom_combo_name, 'Custom Feast Combo') as package_name,
               u.full_name as customer_name, u.phone as customer_phone, u.email as customer_email
        FROM order_svc.bookings b
-       JOIN caterer_svc.packages p ON b.package_id = p.id
+       LEFT JOIN caterer_svc.packages p ON b.package_id = p.id
        LEFT JOIN auth_svc.users u ON b.customer_id = u.id
        WHERE b.caterer_id = $1
        ORDER BY b.event_date ASC, b.created_at DESC`,
@@ -258,11 +292,11 @@ export function buildBookingServer() {
     }
 
     const res = await pgPool.query(
-      `SELECT b.*, c.business_name, c.owner_id as caterer_owner_id, p.name as package_name,
+      `SELECT b.*, c.business_name, c.owner_id as caterer_owner_id, COALESCE(p.name, b.custom_combo_name, 'Custom Feast Combo') as package_name,
               u.full_name as customer_name, u.phone as customer_phone, u.email as customer_email
        FROM order_svc.bookings b
        JOIN caterer_svc.caterers c ON b.caterer_id = c.id
-       JOIN caterer_svc.packages p ON b.package_id = p.id
+       LEFT JOIN caterer_svc.packages p ON b.package_id = p.id
        LEFT JOIN auth_svc.users u ON b.customer_id = u.id
        WHERE b.id = $1`,
       [id]

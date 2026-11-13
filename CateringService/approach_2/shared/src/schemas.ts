@@ -43,7 +43,20 @@ export const packageSchema = z.object({
 
 export const bookingRequestSchema = z.object({
   catererId: z.string().uuid(),
-  packageId: z.string().uuid(),
+  packageId: z.string().uuid().optional().nullable(),
+  customComboName: z.string().optional().nullable(),
+  customizedItems: z
+    .array(
+      z.object({
+        id: z.string(),
+        name: z.string(),
+        pricePaise: z.number().int().nonnegative().optional(),
+        category: z.string().optional(),
+        isVeg: z.boolean().optional(),
+      })
+    )
+    .optional()
+    .nullable(),
   eventDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Date must be YYYY-MM-DD'),
   eventTime: z.string().regex(/^\d{2}:\d{2}(:\d{2})?$/, 'Time must be HH:MM or HH:MM:SS'),
   guestCount: z.number().int().positive(),

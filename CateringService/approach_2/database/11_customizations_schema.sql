@@ -36,7 +36,8 @@ CREATE TABLE IF NOT EXISTS caterer_svc.package_menu_items (
   PRIMARY KEY (package_id, menu_item_id)
 );
 
--- 4. Store custom item selections in Bookings
+-- 4. Store custom item selections in Bookings & make package_id nullable for custom feast combos
 ALTER TABLE order_svc.bookings
+  ALTER COLUMN package_id DROP NOT NULL,
   ADD COLUMN IF NOT EXISTS customized_items jsonb DEFAULT '[]'::jsonb,
   ADD COLUMN IF NOT EXISTS custom_combo_name text;

@@ -6,6 +6,8 @@ import type { Caterer, MenuItem, MenuItemCategory } from '@/types/database';
 interface CustomComboBuilderModalProps {
   caterer: Caterer;
   menuItems: MenuItem[];
+  initialSelectedItemId?: string;
+  initialGuestCount?: number;
   onClose: () => void;
   onProceedToBooking: (combo: {
     comboName: string;
@@ -28,12 +30,22 @@ const CATEGORY_NAMES: Record<MenuItemCategory, string> = {
 export const CustomComboBuilderModal: React.FC<CustomComboBuilderModalProps> = ({
   caterer,
   menuItems,
+  initialSelectedItemId,
+  initialGuestCount,
   onClose,
   onProceedToBooking,
 }) => {
   const [comboName, setComboName] = useState('My Custom Wedding Feast');
-  const [selectedItemIds, setSelectedItemIds] = useState<Set<string>>(new Set());
-  const [guestCount, setGuestCount] = useState<number>(caterer.min_guests || 50);
+  const [selectedItemIds, setSelectedItemIds] = useState<Set<string>>(() => {
+    const s = new Set<string>();
+    if (initialSelectedItemId) {
+      s.add(initialSelectedItemId);
+    }
+    return s;
+  });
+  const [guestCount, setGuestCount] = useState<number>(
+    initialGuestCount || caterer.min_guests || 50
+  );
   const [activeCategory, setActiveCategory] = useState<string>('all');
   const [error, setError] = useState<string | null>(null);
 

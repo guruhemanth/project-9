@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
-import { Search, MapPin, Star, Utensils, Globe, ChevronDown, Check } from 'lucide-react';
+import { Search, MapPin, Star, Utensils, Globe, ChevronDown, Check, Users } from 'lucide-react';
 import { formatPaiseToINR } from '@/lib/formatters';
 import { fetchCaterers } from './api';
 import { POPULAR_CATERING_HUBS } from '@caterconnect/shared';
@@ -11,6 +11,7 @@ export const CustomerHome: React.FC = () => {
     return localStorage.getItem('caterconnect_customer_city') || 'All India';
   });
   const [selectedCuisine, setSelectedCuisine] = useState('all');
+  const [guestCountFilter, setGuestCountFilter] = useState<number | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [caterers, setCaterers] = useState<(Caterer & { startingPricePaise: number })[]>([]);
   const [loading, setLoading] = useState(true);
@@ -83,6 +84,15 @@ export const CustomerHome: React.FC = () => {
   }, [selectedCity, selectedCuisine]);
 
   const filteredCaterers = caterers.filter((c) => {
+    // Guest count capacity check
+    if (guestCountFilter !== null) {
+      const minG = c.min_guests || 25;
+      const maxG = c.max_guests || 3000;
+      if (guestCountFilter < minG || guestCountFilter > maxG) {
+        return false;
+      }
+    }
+
     if (!searchQuery.trim()) return true;
     const q = searchQuery.toLowerCase();
     const matchesName = c.business_name.toLowerCase().includes(q);
@@ -188,31 +198,59 @@ export const CustomerHome: React.FC = () => {
             </div>
           </div>
 
-          {/* Right: Cuisines Horizontal Menu Strip */}
-          <div className="flex items-center gap-1.5 overflow-x-auto w-full md:w-auto pb-1 md:pb-0 scrollbar-none">
-            <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider hidden lg:inline mr-1">
-              Cuisines:
-            </span>
-            {[
-              { id: 'all', label: 'All Feasts' },
-              { id: 'andhra', label: 'Andhra Traditional' },
-              { id: 'south_indian', label: 'South Indian' },
-              { id: 'north_indian', label: 'North Indian' },
-              { id: 'hyderabadi', label: 'Hyderabadi' },
-              { id: 'traditional_meals', label: 'Banana Leaf' },
-            ].map((item) => (
-              <button
-                key={item.id}
-                onClick={() => setSelectedCuisine(item.id)}
-                className={`rounded-lg px-3 py-1.5 text-xs font-semibold shrink-0 transition ${
-                  selectedCuisine === item.id
-                    ? 'bg-emerald-700 text-white shadow-2xs'
-                    : 'bg-slate-100/80 text-slate-700 hover:bg-slate-200/80'
-                }`}
-              >
-                {item.label}
-              </button>
-            ))}
+          {/* Right: Guest Count & Cuisines Strip */}
+          <div className="flex flex-wrap items-center gap-3 w-full md:w-auto">
+            {/* Quick Guest Count Filter */}
+            <div className="flex items-center gap-1 bg-slate-100/90 p-1 rounded-xl">
+              <span className="flex items-center gap-1 text-[11px] font-bold text-slate-500 px-1.5">
+                <Users className="h-3 w-3 text-emerald-600" />
+                Guests:
+              </span>
+              {[
+                { val: null, label: 'Any' },
+                { val: 50, label: '50' },
+                { val: 100, label: '100' },
+                { val: 250, label: '250' },
+                { val: 500, label: '500+' },
+              ].map((g) => (
+                <button
+                  key={String(g.val)}
+                  type="button"
+                  onClick={() => setGuestCountFilter(g.val)}
+                  className={`rounded-lg px-2 py-1 text-[11px] font-semibold transition ${
+                    guestCountFilter === g.val
+                      ? 'bg-emerald-700 text-white shadow-2xs font-bold'
+                      : 'text-slate-600 hover:bg-slate-200/70'
+                  }`}
+                >
+                  {g.label}
+                </button>
+              ))}
+            </div>
+
+            {/* Cuisines Horizontal Menu Strip */}
+            <div className="flex items-center gap-1.5 overflow-x-auto pb-1 md:pb-0 scrollbar-none">
+              {[
+                { id: 'all', label: 'All Feasts' },
+                { id: 'andhra', label: 'Andhra' },
+                { id: 'south_indian', label: 'South Indian' },
+                { id: 'north_indian', label: 'North Indian' },
+                { id: 'hyderabadi', label: 'Hyderabadi' },
+                { id: 'traditional_meals', label: 'Banana Leaf' },
+              ].map((item) => (
+                <button
+                  key={item.id}
+                  onClick={() => setSelectedCuisine(item.id)}
+                  className={`rounded-lg px-2.5 py-1 text-xs font-semibold shrink-0 transition ${
+                    selectedCuisine === item.id
+                      ? 'bg-emerald-700 text-white shadow-2xs'
+                      : 'bg-slate-100/80 text-slate-700 hover:bg-slate-200/80'
+                  }`}
+                >
+                  {item.label}
+                </button>
+              ))}
+            </div>
           </div>
         </div>
       </nav>
@@ -309,16 +347,22 @@ export const CustomerHome: React.FC = () => {
                     <h3 className="mt-2 text-base font-bold text-slate-900">{caterer.business_name}</h3>
                     <p className="mt-1 text-xs text-slate-600 line-clamp-2">{caterer.description}</p>
 
-                    {/* Service Areas Coverage */}
-                    {caterer.service_areas && caterer.service_areas.length > 0 && (
-                      <div className="mt-2 text-[11px] text-slate-500">
-                        <span className="font-semibold text-slate-700">Servicing: </span>
-                        <span>{caterer.service_areas.slice(0, 3).join(', ')}</span>
-                        {caterer.service_areas.length > 3 && (
-                          <span className="text-emerald-700 font-semibold"> +{caterer.service_areas.length - 3} more</span>
-                        )}
+                    {/* Service Areas & Capacity */}
+                    <div className="mt-2 space-y-1 text-[11px] text-slate-500">
+                      {caterer.service_areas && caterer.service_areas.length > 0 && (
+                        <div>
+                          <span className="font-semibold text-slate-700">Servicing: </span>
+                          <span>{caterer.service_areas.slice(0, 3).join(', ')}</span>
+                          {caterer.service_areas.length > 3 && (
+                            <span className="text-emerald-700 font-semibold"> +{caterer.service_areas.length - 3} more</span>
+                          )}
+                        </div>
+                      )}
+                      <div className="flex items-center gap-1 text-slate-600 font-medium">
+                        <Users className="h-3 w-3 text-emerald-600" />
+                        <span>Order Capacity: <b>{caterer.min_guests || 25}</b> - <b>{caterer.max_guests || '2,000+'}</b> guests</span>
                       </div>
-                    )}
+                    </div>
 
                     <div className="mt-3 flex flex-wrap gap-1">
                       {caterer.cuisines.map((c) => (
