@@ -12,10 +12,12 @@ import {
   Image as ImageIcon,
   Check,
   X,
+  CheckCircle2,
 } from 'lucide-react';
 import { apiFetch } from '@/lib/api-client';
 import { formatPaiseToINR } from '@/lib/formatters';
 import type { MenuItem, MenuItemCategory } from '@/types/database';
+import { BulkUploadModal } from './BulkUploadModal';
 
 interface MenuItemsManagerProps {
   catererId: string;
@@ -61,6 +63,10 @@ export const MenuItemsManager: React.FC<MenuItemsManagerProps> = ({ catererId })
   const [editingPhotoItem, setEditingPhotoItem] = useState<MenuItem | null>(null);
   const [editingPhotoUrl, setEditingPhotoUrl] = useState('');
   const [savingPhoto, setSavingPhoto] = useState(false);
+
+  // Bulk Upload Modal State
+  const [showBulkUpload, setShowBulkUpload] = useState(false);
+  const [successToast, setSuccessToast] = useState<string | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const modalFileInputRef = useRef<HTMLInputElement>(null);
@@ -218,15 +224,34 @@ export const MenuItemsManager: React.FC<MenuItemsManagerProps> = ({ catererId })
           </p>
         </div>
 
-        <button
-          type="button"
-          onClick={() => setShowAddForm(!showAddForm)}
-          className="flex items-center gap-2 rounded-lg bg-amber-600 px-4 py-2 text-xs font-semibold text-white hover:bg-amber-700 transition self-start sm:self-auto shadow-2xs"
-        >
-          <Plus className="h-4 w-4" />
-          <span>{showAddForm ? 'Close Form' : 'Add New Dish'}</span>
-        </button>
+        <div className="flex items-center gap-2 self-start sm:self-auto">
+          <button
+            type="button"
+            onClick={() => setShowBulkUpload(true)}
+            className="flex items-center gap-1.5 rounded-lg border border-amber-300 bg-amber-50 px-3.5 py-2 text-xs font-semibold text-amber-900 hover:bg-amber-100 transition shadow-2xs"
+            title="Import dozens of dishes from a CSV spreadsheet"
+          >
+            <Upload className="h-4 w-4 text-amber-700" />
+            <span>📥 Bulk Upload Menu</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setShowAddForm(!showAddForm)}
+            className="flex items-center gap-2 rounded-lg bg-amber-600 px-4 py-2 text-xs font-semibold text-white hover:bg-amber-700 transition shadow-2xs"
+          >
+            <Plus className="h-4 w-4" />
+            <span>{showAddForm ? 'Close Form' : 'Add New Dish'}</span>
+          </button>
+        </div>
       </div>
+
+      {successToast && (
+        <div className="flex items-center gap-2 rounded-lg bg-emerald-50 p-3 text-xs text-emerald-800 border border-emerald-200 shadow-2xs">
+          <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-600" />
+          <span className="font-medium">{successToast}</span>
+        </div>
+      )}
 
       {error && (
         <div className="flex items-center gap-2 rounded-lg bg-red-50 p-3 text-xs text-red-700 border border-red-200">
@@ -669,6 +694,22 @@ export const MenuItemsManager: React.FC<MenuItemsManagerProps> = ({ catererId })
             </div>
           </div>
         </div>
+      )}
+
+      {/* Bulk Upload Modal */}
+      {showBulkUpload && (
+        <BulkUploadModal
+          catererId={catererId}
+          existingItems={items}
+          onClose={() => setShowBulkUpload(false)}
+          onSuccess={(inserted, updated) => {
+            fetchItems();
+            setSuccessToast(
+              `🎉 Bulk import complete! Added ${inserted} new dishes, updated ${updated} existing recipes.`
+            );
+            setTimeout(() => setSuccessToast(null), 6000);
+          }}
+        />
       )}
     </div>
   );

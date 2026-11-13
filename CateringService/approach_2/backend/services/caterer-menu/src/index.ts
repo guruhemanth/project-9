@@ -852,6 +852,103 @@ export function buildCatererServer() {
     }
   });
 
+  // Smart auto-fallback resolver for dish photos based on keywords & category
+  function resolveSmartDishImage(name: string, category: string, providedUrl?: string | null): string {
+    if (providedUrl && providedUrl.trim().length > 0) {
+      return providedUrl.trim();
+    }
+
+    const n = name.toLowerCase();
+
+    // Starters
+    if (n.includes('paneer') && (n.includes('tikka') || n.includes('kebab') || category === 'starter')) {
+      return 'https://images.unsplash.com/photo-1567188040759-fb8a883dc6d8?auto=format&fit=crop&w=600&q=80';
+    }
+    if (n.includes('bajji') || n.includes('pakora') || n.includes('samosa')) {
+      return 'https://images.unsplash.com/photo-1601050690597-df0568f70950?auto=format&fit=crop&w=600&q=80';
+    }
+    if (n.includes('vada')) {
+      return 'https://images.unsplash.com/photo-1589301760014-d929f3979dbc?auto=format&fit=crop&w=600&q=80';
+    }
+    if (n.includes('chicken 65') || n.includes('kebab') || n.includes('seekh') || n.includes('65')) {
+      return 'https://images.unsplash.com/photo-1610057099443-fde8c4d50f91?auto=format&fit=crop&w=600&q=80';
+    }
+    if (n.includes('hara bhara')) {
+      return 'https://images.unsplash.com/photo-1599488615731-7e5c2823ff28?auto=format&fit=crop&w=600&q=80';
+    }
+
+    // Mains
+    if (n.includes('paneer') && (category === 'main' || n.includes('masala') || n.includes('butter'))) {
+      return 'https://images.unsplash.com/photo-1631452180519-c014fe946bc7?auto=format&fit=crop&w=600&q=80';
+    }
+    if (n.includes('dal') || n.includes('pappu') || n.includes('sambar') || n.includes('rasam')) {
+      return 'https://images.unsplash.com/photo-1546833999-b9f581a1996d?auto=format&fit=crop&w=600&q=80';
+    }
+    if (n.includes('vankaya') || n.includes('kurma') || n.includes('kofta') || n.includes('curry')) {
+      return 'https://images.unsplash.com/photo-1585937421612-70a008356fbe?auto=format&fit=crop&w=600&q=80';
+    }
+    if (n.includes('chicken') || n.includes('murgh')) {
+      return 'https://images.unsplash.com/photo-1588166524941-3bf61a9c41db?auto=format&fit=crop&w=600&q=80';
+    }
+    if (n.includes('mutton') || n.includes('gongura') || n.includes('lamb')) {
+      return 'https://images.unsplash.com/photo-1545247181-516773cae754?auto=format&fit=crop&w=600&q=80';
+    }
+
+    // Breads & Rice
+    if (n.includes('chicken') && n.includes('biryani')) {
+      return 'https://images.unsplash.com/photo-1633945274405-b6c8069047b0?auto=format&fit=crop&w=600&q=80';
+    }
+    if (n.includes('biryani') || n.includes('pulao') || n.includes('bagara') || n.includes('fried rice')) {
+      return 'https://images.unsplash.com/photo-1563379091339-03b21ab4a4f8?auto=format&fit=crop&w=600&q=80';
+    }
+    if (n.includes('naan') || n.includes('roti') || n.includes('paratha') || n.includes('kulcha')) {
+      return 'https://images.unsplash.com/photo-1601050690117-94f5f6fa8bd7?auto=format&fit=crop&w=600&q=80';
+    }
+    if (n.includes('rice') || n.includes('pongal')) {
+      return 'https://images.unsplash.com/photo-1626777552726-4a6b54c97e46?auto=format&fit=crop&w=600&q=80';
+    }
+
+    // Desserts
+    if (n.includes('jamun')) {
+      return 'https://images.unsplash.com/photo-1589301773859-bb0d43a6aa9b?auto=format&fit=crop&w=600&q=80';
+    }
+    if (n.includes('laddu') || n.includes('kaju') || n.includes('sweet') || n.includes('barfi')) {
+      return 'https://images.unsplash.com/photo-1605197143984-6992d9d6d1b7?auto=format&fit=crop&w=600&q=80';
+    }
+    if (n.includes('payasam') || n.includes('kheer')) {
+      return 'https://images.unsplash.com/photo-1579954115545-a95591f28bfc?auto=format&fit=crop&w=600&q=80';
+    }
+    if (n.includes('halwa') || n.includes('tukda')) {
+      return 'https://images.unsplash.com/photo-1551024709-8f23befc6f87?auto=format&fit=crop&w=600&q=80';
+    }
+
+    // Drinks
+    if (n.includes('majjiga') || n.includes('buttermilk') || n.includes('lassi')) {
+      return 'https://images.unsplash.com/photo-1556881286-fc6915169721?auto=format&fit=crop&w=600&q=80';
+    }
+    if (n.includes('sharbat') || n.includes('panna') || n.includes('thandai') || n.includes('juice')) {
+      return 'https://images.unsplash.com/photo-1513558161293-cdaf765ed2fd?auto=format&fit=crop&w=600&q=80';
+    }
+    if (n.includes('coffee') || n.includes('chai') || n.includes('tea')) {
+      return 'https://images.unsplash.com/photo-1514432324607-a09d9b4aefdd?auto=format&fit=crop&w=600&q=80';
+    }
+    if (n.includes('coconut')) {
+      return 'https://images.unsplash.com/photo-1536935338788-846bb9981813?auto=format&fit=crop&w=600&q=80';
+    }
+
+    const categoryFallbacks: Record<string, string> = {
+      starter: 'https://images.unsplash.com/photo-1601050690597-df0568f70950?auto=format&fit=crop&w=600&q=80',
+      main: 'https://images.unsplash.com/photo-1546833999-b9f581a1996d?auto=format&fit=crop&w=600&q=80',
+      bread_rice: 'https://images.unsplash.com/photo-1563379091339-03b21ab4a4f8?auto=format&fit=crop&w=600&q=80',
+      dessert: 'https://images.unsplash.com/photo-1589301773859-bb0d43a6aa9b?auto=format&fit=crop&w=600&q=80',
+      welcome_drink: 'https://images.unsplash.com/photo-1513558161293-cdaf765ed2fd?auto=format&fit=crop&w=600&q=80',
+      beverage: 'https://images.unsplash.com/photo-1514432324607-a09d9b4aefdd?auto=format&fit=crop&w=600&q=80',
+      accompaniment: 'https://images.unsplash.com/photo-1626777552726-4a6b54c97e46?auto=format&fit=crop&w=600&q=80',
+    };
+
+    return categoryFallbacks[category] || 'https://images.unsplash.com/photo-1546833999-b9f581a1996d?auto=format&fit=crop&w=600&q=80';
+  }
+
   // Caterer Menu Item Management (CRUD)
   // List menu items for a caterer
   server.get('/api/caterers/:id/items', async (req, reply) => {
@@ -902,7 +999,8 @@ export function buildCatererServer() {
         return reply.status(400).send({ error: `Category must be one of: ${validCategories.join(', ')}` });
       }
 
-      const finalImageUrl = imageUrl || image_url || null;
+      const rawImg = imageUrl || image_url || null;
+      const finalImageUrl = resolveSmartDishImage(name.trim(), category, rawImg);
 
       const insRes = await pgPool.query(
         `INSERT INTO caterer_svc.menu_items (caterer_id, name, category, price_paise, is_veg, description, image_url)
@@ -915,6 +1013,164 @@ export function buildCatererServer() {
     } catch (err: any) {
       req.log.error(err);
       return reply.status(500).send({ error: 'Failed to create menu item' });
+    }
+  });
+
+  // Bulk upload / upsert menu items
+  server.post('/api/caterers/:id/items/bulk', async (req, reply) => {
+    try {
+      const { id } = req.params as { id: string };
+      const authUser = getAuthenticatedUser(req);
+      if (!authUser) {
+        return reply.status(401).send({ error: 'Unauthorized: Authentication required' });
+      }
+
+      // Assert ownership
+      if (authUser.role !== 'admin') {
+        const cRes = await pgPool.query('SELECT owner_id FROM caterer_svc.caterers WHERE id = $1', [id]);
+        if (cRes.rows.length === 0 || cRes.rows[0].owner_id !== authUser.userId) {
+          return reply.status(403).send({ error: 'Forbidden: You do not own this caterer business' });
+        }
+      }
+
+      const { items } = req.body as {
+        items: Array<{
+          name: string;
+          category: string;
+          pricePaise?: number;
+          priceRupees?: number;
+          price_paise?: number;
+          price_rupees?: number;
+          isVeg?: boolean | string;
+          is_veg?: boolean | string;
+          description?: string;
+          imageUrl?: string;
+          image_url?: string;
+        }>;
+      };
+
+      if (!Array.isArray(items) || items.length === 0) {
+        return reply.status(400).send({ error: 'Payload must contain a non-empty items array' });
+      }
+
+      const validCategories = new Set([
+        'welcome_drink',
+        'starter',
+        'main',
+        'bread_rice',
+        'dessert',
+        'beverage',
+        'accompaniment',
+      ]);
+
+      const client = await pgPool.connect();
+      try {
+        await client.query('BEGIN');
+
+        let insertedCount = 0;
+        let updatedCount = 0;
+        const processedItems: any[] = [];
+
+        for (const item of items) {
+          if (!item.name || !item.name.trim()) continue;
+          const cleanName = item.name.trim();
+
+          // Category normalization
+          let cleanCat = (item.category || '').toLowerCase().trim().replace(/[\s-]+/g, '_');
+          if (cleanCat === 'drinks' || cleanCat === 'drink') cleanCat = 'beverage';
+          if (cleanCat === 'starters') cleanCat = 'starter';
+          if (cleanCat === 'mains' || cleanCat === 'curry' || cleanCat === 'curries') cleanCat = 'main';
+          if (cleanCat === 'rice' || cleanCat === 'bread' || cleanCat === 'breads') cleanCat = 'bread_rice';
+          if (cleanCat === 'desserts' || cleanCat === 'sweet' || cleanCat === 'sweets') cleanCat = 'dessert';
+          if (cleanCat === 'chutney' || cleanCat === 'chutneys') cleanCat = 'accompaniment';
+          if (!validCategories.has(cleanCat)) {
+            cleanCat = 'main';
+          }
+
+          // Price normalization
+          let finalPricePaise = 0;
+          if (typeof item.pricePaise === 'number') {
+            finalPricePaise = Math.round(item.pricePaise);
+          } else if (typeof item.price_paise === 'number') {
+            finalPricePaise = Math.round(item.price_paise);
+          } else if (item.priceRupees !== undefined && item.priceRupees !== null) {
+            finalPricePaise = Math.round(Number(item.priceRupees) * 100);
+          } else if (item.price_rupees !== undefined && item.price_rupees !== null) {
+            finalPricePaise = Math.round(Number(item.price_rupees) * 100);
+          }
+          if (isNaN(finalPricePaise) || finalPricePaise < 0) {
+            finalPricePaise = 5000; // default 50 INR
+          }
+
+          // Veg status normalization
+          let isVeg = true;
+          const rawVeg = item.isVeg ?? item.is_veg;
+          if (typeof rawVeg === 'boolean') {
+            isVeg = rawVeg;
+          } else if (typeof rawVeg === 'string') {
+            const low = rawVeg.toLowerCase().trim();
+            if (low === 'non-veg' || low === 'nonveg' || low === 'false' || low === 'no' || low === '0') {
+              isVeg = false;
+            }
+          }
+
+          const desc = item.description?.trim() || null;
+          const resolvedImg = resolveSmartDishImage(cleanName, cleanCat, item.imageUrl || item.image_url);
+
+          // Check if item already exists in this caterer's menu (case-insensitive name match)
+          const existRes = await client.query(
+            `SELECT id, image_url FROM caterer_svc.menu_items
+             WHERE caterer_id = $1 AND LOWER(TRIM(name)) = LOWER(TRIM($2))
+             LIMIT 1`,
+            [id, cleanName]
+          );
+
+          if (existRes.rows.length > 0) {
+            const existingId = existRes.rows[0].id;
+            const existingImg = existRes.rows[0].image_url;
+            const finalImg = (item.imageUrl || item.image_url) ? resolvedImg : (existingImg || resolvedImg);
+
+            const upd = await client.query(
+              `UPDATE caterer_svc.menu_items
+               SET category = $1, price_paise = $2, is_veg = $3, description = COALESCE($4, description),
+                   image_url = $5, updated_at = NOW()
+               WHERE id = $6
+               RETURNING *`,
+              [cleanCat, finalPricePaise, isVeg, desc, finalImg, existingId]
+            );
+            updatedCount++;
+            processedItems.push(upd.rows[0]);
+          } else {
+            const ins = await client.query(
+              `INSERT INTO caterer_svc.menu_items
+               (caterer_id, name, category, price_paise, is_veg, description, image_url, is_available)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, true)
+               RETURNING *`,
+              [id, cleanName, cleanCat, finalPricePaise, isVeg, desc, resolvedImg]
+            );
+            insertedCount++;
+            processedItems.push(ins.rows[0]);
+          }
+        }
+
+        await client.query('COMMIT');
+
+        return reply.status(200).send({
+          success: true,
+          count: processedItems.length,
+          inserted: insertedCount,
+          updated: updatedCount,
+          items: processedItems,
+        });
+      } catch (txErr) {
+        await client.query('ROLLBACK');
+        throw txErr;
+      } finally {
+        client.release();
+      }
+    } catch (err: any) {
+      req.log.error(err);
+      return reply.status(500).send({ error: 'Failed to process bulk menu upload' });
     }
   });
 
