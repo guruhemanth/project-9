@@ -41,3 +41,7 @@ ALTER TABLE order_svc.bookings
   ALTER COLUMN package_id DROP NOT NULL,
   ADD COLUMN IF NOT EXISTS customized_items jsonb DEFAULT '[]'::jsonb,
   ADD COLUMN IF NOT EXISTS custom_combo_name text;
+
+-- 5. Ensure chat_threads has updated_at column
+ALTER TABLE chat_svc.chat_threads
+  ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DEFAULT now();

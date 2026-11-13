@@ -135,7 +135,7 @@ export function buildChatServer() {
         threadRes = await pgPool.query(
           `INSERT INTO chat_svc.chat_threads (booking_id, customer_id, caterer_id)
            VALUES ($1, $2, $3)
-           ON CONFLICT (booking_id) DO UPDATE SET updated_at = NOW()
+           ON CONFLICT (booking_id) DO UPDATE SET last_message_at = chat_threads.last_message_at
            RETURNING *`,
           [bookingId, booking.customer_id, booking.caterer_id]
         );
@@ -284,7 +284,7 @@ export function buildChatServer() {
           b.event_date,
           b.guest_count,
           b.venue_address,
-          p.name as package_name,
+          COALESCE(p.name, b.custom_combo_name, 'Custom Feast Combo') as package_name,
           (
             SELECT message 
             FROM chat_svc.chat_messages m 
