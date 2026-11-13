@@ -3,6 +3,7 @@ import { useAuth } from '@/lib/auth/AuthContext';
 import { Clock, CheckCircle2, Utensils, FileText, Calendar as CalendarIcon } from 'lucide-react';
 import { formatPaiseToINR } from '@/lib/formatters';
 import { fetchCatererSettlements } from '@/features/payment/api';
+import { fetchCatererBookings, acceptBooking, rejectBooking } from './api';
 import { CatererOnboardingForm } from './components/CatererOnboardingForm';
 import { PackageList } from './components/PackageList';
 import { CreatePackageModal } from './components/CreatePackageModal';
@@ -81,6 +82,22 @@ export const CatererDashboard: React.FC = () => {
   const [activeTab, setActiveTab] = useState<'requests' | 'packages' | 'calendar' | 'earnings'>('requests');
   const [settlementData, setSettlementData] = useState<any>(null);
 
+  const loadBookings = React.useCallback(async () => {
+    if (!caterer?.id) return;
+    try {
+      const res = await fetchCatererBookings(caterer.id);
+      if (res && Array.isArray(res.bookings)) {
+        setIncomingRequests(res.bookings);
+      }
+    } catch (err) {
+      console.error('Failed to load caterer bookings:', err);
+    }
+  }, [caterer?.id]);
+
+  React.useEffect(() => {
+    loadBookings();
+  }, [loadBookings]);
+
   React.useEffect(() => {
     if (caterer?.id && activeTab === 'earnings') {
       fetchCatererSettlements(caterer.id)
@@ -100,36 +117,48 @@ export const CatererDashboard: React.FC = () => {
     setShowCreateModal(false);
   };
 
-  const handleAcceptRequest = (bookingId: string, note?: string) => {
-    setIncomingRequests((prev) =>
-      prev.map((r) =>
-        r.id === bookingId
-          ? {
-              ...r,
-              status: 'accepted',
-              commission_pct: 15.00,
-              commission_amount: Math.round(((r.total_amount || 0) * 15) / 100),
-              caterer_note: note || 'Accepted by caterer',
-              updated_at: new Date().toISOString(),
-            }
-          : r
-      )
-    );
+  const handleAcceptRequest = async (bookingId: string, note?: string) => {
+    try {
+      await acceptBooking(bookingId, note);
+      await loadBookings();
+    } catch (err) {
+      console.error('Failed to accept booking via API, applying local update:', err);
+      setIncomingRequests((prev) =>
+        prev.map((r) =>
+          r.id === bookingId
+            ? {
+                ...r,
+                status: 'accepted',
+                commission_pct: 15.00,
+                commission_amount: Math.round(((r.total_amount || 0) * 15) / 100),
+                caterer_note: note || 'Accepted by caterer',
+                updated_at: new Date().toISOString(),
+              }
+            : r
+        )
+      );
+    }
   };
 
-  const handleRejectRequest = (bookingId: string, note?: string) => {
-    setIncomingRequests((prev) =>
-      prev.map((r) =>
-        r.id === bookingId
-          ? {
-              ...r,
-              status: 'rejected',
-              caterer_note: note || 'Declined due to scheduling',
-              updated_at: new Date().toISOString(),
-            }
-          : r
-      )
-    );
+  const handleRejectRequest = async (bookingId: string, note?: string) => {
+    try {
+      await rejectBooking(bookingId, note);
+      await loadBookings();
+    } catch (err) {
+      console.error('Failed to reject booking via API, applying local update:', err);
+      setIncomingRequests((prev) =>
+        prev.map((r) =>
+          r.id === bookingId
+            ? {
+                ...r,
+                status: 'rejected',
+                caterer_note: note || 'Declined due to scheduling',
+                updated_at: new Date().toISOString(),
+              }
+            : r
+        )
+      );
+    }
   };
 
   if (!caterer) {

@@ -68,6 +68,30 @@ const MIGRATIONS: MigrationDefinition[] = [
       ALTER TABLE order_svc.bookings DROP COLUMN IF EXISTS state, DROP COLUMN IF EXISTS pincode;
     `,
   },
+  {
+    name: '08_dynamic_commission',
+    upFile: '08_dynamic_commission.sql',
+    downSql: `
+      ALTER TABLE caterer_svc.caterers DROP COLUMN IF EXISTS commission_pct;
+    `,
+  },
+  {
+    name: '09_google_auth',
+    upFile: '09_google_auth.sql',
+    downSql: `
+      DROP INDEX IF EXISTS auth_svc.idx_users_google_id;
+      ALTER TABLE auth_svc.users DROP COLUMN IF EXISTS google_id;
+      ALTER TABLE auth_svc.users DROP COLUMN IF EXISTS is_verified;
+    `,
+  },
+  {
+    name: '10_push_and_outbox',
+    upFile: '10_push_and_outbox.sql',
+    downSql: `
+      DROP TABLE IF EXISTS notify_svc.notification_outbox CASCADE;
+      DROP TABLE IF EXISTS notify_svc.push_subscriptions CASCADE;
+    `,
+  },
 ];
 
 function getConnectionString(): string {
