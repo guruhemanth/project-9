@@ -216,9 +216,11 @@ export function buildBookingServer() {
     }
 
     const res = await pgPool.query(
-      `SELECT b.*, p.name as package_name
+      `SELECT b.*, p.name as package_name,
+              u.full_name as customer_name, u.phone as customer_phone, u.email as customer_email
        FROM order_svc.bookings b
        JOIN caterer_svc.packages p ON b.package_id = p.id
+       LEFT JOIN auth_svc.users u ON b.customer_id = u.id
        WHERE b.caterer_id = $1
        ORDER BY b.event_date ASC, b.created_at DESC`,
       [catererId]
@@ -236,10 +238,12 @@ export function buildBookingServer() {
     }
 
     const res = await pgPool.query(
-      `SELECT b.*, c.business_name, c.owner_id as caterer_owner_id, p.name as package_name
+      `SELECT b.*, c.business_name, c.owner_id as caterer_owner_id, p.name as package_name,
+              u.full_name as customer_name, u.phone as customer_phone, u.email as customer_email
        FROM order_svc.bookings b
        JOIN caterer_svc.caterers c ON b.caterer_id = c.id
        JOIN caterer_svc.packages p ON b.package_id = p.id
+       LEFT JOIN auth_svc.users u ON b.customer_id = u.id
        WHERE b.id = $1`,
       [id]
     );

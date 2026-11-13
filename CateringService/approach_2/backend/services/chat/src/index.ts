@@ -38,11 +38,17 @@ export function buildChatServer() {
   server.register(fastifyWebsocket);
 
   // Helper to assert caller is a participant in the chat thread or admin
+  const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
   async function assertThreadParticipant(
     threadId: string,
     actorId: string,
     actorRole: string
   ): Promise<{ authorized: boolean; thread?: any; statusCode?: number; error?: string }> {
+    if (!threadId || !UUID_REGEX.test(threadId)) {
+      return { authorized: false, statusCode: 404, error: 'Chat thread not found' };
+    }
+
     const tRes = await pgPool.query(
       `SELECT t.id, t.customer_id, t.caterer_id, c.owner_id as caterer_owner_id
        FROM chat_svc.chat_threads t
@@ -89,6 +95,10 @@ export function buildChatServer() {
       const user = getAuthenticatedUser(req);
       if (!user) {
         return reply.status(401).send({ error: 'Unauthorized: Authentication required' });
+      }
+
+      if (!bookingId || !UUID_REGEX.test(bookingId)) {
+        return reply.status(404).send({ error: 'Booking not found' });
       }
 
       // 1. Fetch booking participants

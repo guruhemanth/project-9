@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Clock, Check, X, Calendar, MapPin, CheckCircle2, MessageSquare } from 'lucide-react';
+import { Clock, Check, X, Calendar, MapPin, CheckCircle2, MessageSquare, User, Phone } from 'lucide-react';
 import { formatPaiseToINR, formatIndianDate } from '@/lib/formatters';
 import { PartnerChatDrawer } from '@/features/chat/PartnerChatDrawer';
 import type { Booking } from '@/types/database';
@@ -69,6 +69,22 @@ export const IncomingRequestsQueue: React.FC<Props> = ({
                     <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-bold text-amber-800">
                       Awaiting Response
                     </span>
+                  </div>
+
+                  {/* Customer Identification */}
+                  <div className="flex flex-wrap items-center gap-3 text-xs text-slate-700 bg-slate-50 px-2.5 py-1.5 rounded-md border border-slate-100">
+                    <span className="flex items-center gap-1 font-semibold text-slate-900">
+                      <User className="h-3.5 w-3.5 text-slate-500" />
+                      {req.customer_name || 'Guest Customer'}
+                    </span>
+                    {req.customer_phone && (
+                      <span className="flex items-center gap-1 text-slate-600">
+                        <Phone className="h-3 w-3 text-slate-400" />
+                        <a href={`tel:${req.customer_phone}`} className="hover:underline text-emerald-700">
+                          {req.customer_phone}
+                        </a>
+                      </span>
+                    )}
                   </div>
 
                   <div className="text-xs text-slate-600 flex flex-wrap gap-4">
@@ -197,6 +213,21 @@ export const IncomingRequestsQueue: React.FC<Props> = ({
                     >
                       {b.status.toUpperCase()}
                     </span>
+                  </div>
+                  {/* Customer Identification */}
+                  <div className="flex flex-wrap items-center gap-2 text-slate-700">
+                    <span className="font-semibold text-slate-900 flex items-center gap-1">
+                      <User className="h-3 w-3 text-slate-400" />
+                      {b.customer_name || 'Customer'}
+                    </span>
+                    {b.customer_phone && (
+                      <span className="text-slate-500 flex items-center gap-1">
+                        • <Phone className="h-3 w-3 text-slate-400" />
+                        <a href={`tel:${b.customer_phone}`} className="hover:underline text-emerald-700">
+                          {b.customer_phone}
+                        </a>
+                      </span>
+                    )}
                   </div>
                   <p className="text-slate-500">
                     Venue: {b.venue_address} • {b.guest_count} guests • Total: {b.total_amount && formatPaiseToINR(b.total_amount)}

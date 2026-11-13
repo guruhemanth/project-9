@@ -91,6 +91,10 @@ export interface Addon {
 export interface Booking {
   id: string;
   customer_id: string;
+  customer_name?: string | null;
+  customer_phone?: string | null;
+  customer_email?: string | null;
+  package_name?: string;
   caterer_id: string;
   package_id: string;
   event_date: string; // YYYY-MM-DD
@@ -151,6 +155,10 @@ export interface Review {
   id: string;
   booking_id: string;
   customer_id: string;
+  customer_name?: string | null;
+  customer_phone?: string | null;
+  customer_email?: string | null;
+  package_name?: string;
   caterer_id: string;
   rating: number; // 1 to 5
   comment: string | null;
