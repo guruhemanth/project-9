@@ -37,8 +37,8 @@ function isPublicRoute(method: string, url: string): boolean {
     return true;
   }
 
-  // Public caterer detail view: GET /api/caterers/:id
-  if (method === 'GET' && /^\/api\/caterers\/[0-9a-fA-F-]+$/.test(path)) {
+  // Public caterer detail view: GET /api/caterers/:id and GET /api/caterers/:id/items
+  if (method === 'GET' && /^\/api\/caterers\/[0-9a-fA-F-]+(\/items)?$/.test(path)) {
     return true;
   }
 
