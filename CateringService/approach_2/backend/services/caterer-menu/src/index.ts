@@ -162,9 +162,146 @@ export function buildCatererServer() {
     }
   });
 
+  // Helper to format full caterer profile with packages & menu items
+  async function getFullCatererProfile(c: any) {
+    const id = c.id;
+    const packagesRes = await pgPool.query(
+      `SELECT p.id, p.name, p.description, p.price_per_plate_paise, p.min_guests, p.max_guests, p.is_active,
+        COALESCE(
+          json_agg(
+            json_build_object(
+              'id', pi.id,
+              'name', pi.name,
+              'category', pi.category
+            )
+          ) FILTER (WHERE pi.id IS NOT NULL), '[]'
+        ) as items
+       FROM caterer_svc.packages p
+       LEFT JOIN caterer_svc.package_items pi ON p.id = pi.package_id
+       WHERE p.caterer_id = $1
+       GROUP BY p.id, p.name, p.description, p.price_per_plate_paise, p.min_guests, p.max_guests, p.is_active
+       ORDER BY p.price_per_plate_paise ASC`,
+      [id]
+    );
+
+    const packages = packagesRes.rows.map((row) => ({
+      id: row.id,
+      caterer_id: id,
+      name: row.name,
+      description: row.description,
+      price_per_plate: row.price_per_plate_paise,
+      min_guests: row.min_guests,
+      max_guests: row.max_guests,
+      is_veg: true,
+      is_active: row.is_active,
+      items: row.items,
+    }));
+
+    const menuItemsRes = await pgPool.query(
+      `SELECT id, name, category, price_paise, is_veg, description, is_available
+       FROM caterer_svc.menu_items
+       WHERE caterer_id = $1
+       ORDER BY category ASC, name ASC`,
+      [id]
+    );
+
+    const menuItems = menuItemsRes.rows.map((row) => ({
+      id: row.id,
+      name: row.name,
+      category: row.category,
+      pricePaise: row.price_paise,
+      isVeg: row.is_veg,
+      description: row.description,
+      isAvailable: row.is_available,
+    }));
+
+    return {
+      caterer: {
+        id: c.id,
+        owner_id: c.owner_id,
+        business_name: c.business_name,
+        description: c.description,
+        city: c.city,
+        state: c.state,
+        pincode: c.pincode,
+        address: c.address,
+        service_areas: c.service_areas || [],
+        cuisines: c.cuisines || [],
+        fssai_number: c.fssai_number,
+        gst_number: c.gst_number,
+        status: c.status,
+        rejection_reason: c.rejection_reason,
+        avg_rating: c.avg_rating || 4.8,
+        review_count: c.review_count || 0,
+        min_guests: c.min_guests || 25,
+        max_guests: c.max_guests || 2000,
+        lead_time_days: c.lead_time_days || 2,
+        allows_custom_combo: c.allows_custom_combo ?? true,
+        commission_pct: c.commission_pct || 15.0,
+        created_at: c.created_at,
+        updated_at: c.updated_at,
+      },
+      packages,
+      menuItems,
+    };
+  }
+
+  // Get current logged-in caterer profile (owner)
+  server.get('/api/caterers/me', async (req, reply) => {
+    try {
+      const authUser = getAuthenticatedUser(req);
+      if (!authUser) {
+        return reply.status(401).send({ error: 'Unauthorized: Authentication required' });
+      }
+
+      const catererRes = await pgPool.query(
+        'SELECT * FROM caterer_svc.caterers WHERE owner_id = $1 LIMIT 1',
+        [authUser.userId]
+      );
+
+      if (catererRes.rows.length === 0) {
+        return reply.status(404).send({ error: 'Caterer profile not found for authenticated user' });
+      }
+
+      const fullData = await getFullCatererProfile(catererRes.rows[0]);
+      return reply.send(fullData);
+    } catch (err: any) {
+      req.log.error(err);
+      return reply.status(500).send({ error: 'Failed to retrieve caterer profile' });
+    }
+  });
+
+  // Get caterer by owner ID
+  server.get('/api/caterers/by-owner/:ownerId', async (req, reply) => {
+    try {
+      const { ownerId } = req.params as { ownerId: string };
+      if (!/^[0-9a-fA-F-]{36}$/.test(ownerId)) {
+        return reply.status(400).send({ error: 'Invalid owner ID format' });
+      }
+
+      const catererRes = await pgPool.query(
+        'SELECT * FROM caterer_svc.caterers WHERE owner_id = $1 LIMIT 1',
+        [ownerId]
+      );
+
+      if (catererRes.rows.length === 0) {
+        return reply.status(404).send({ error: 'Caterer profile not found for owner' });
+      }
+
+      const fullData = await getFullCatererProfile(catererRes.rows[0]);
+      return reply.send(fullData);
+    } catch (err: any) {
+      req.log.error(err);
+      return reply.status(500).send({ error: 'Failed to retrieve caterer profile by owner' });
+    }
+  });
+
   // Get single caterer detail by ID with packages and menu items
   server.get('/api/caterers/:id', async (req, reply) => {
     const { id } = req.params as { id: string };
+    if (!/^[0-9a-fA-F-]{36}$/.test(id)) {
+      return reply.status(404).send({ error: 'Caterer not found' });
+    }
 
     const catererRes = await pgPool.query(
       'SELECT * FROM caterer_svc.caterers WHERE id = $1 LIMIT 1',
