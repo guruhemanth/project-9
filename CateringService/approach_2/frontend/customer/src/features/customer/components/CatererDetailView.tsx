@@ -21,6 +21,7 @@ import { formatPaiseToINR } from '@/lib/formatters';
 import { BookingRequestModal } from './BookingRequestModal';
 import { AuthRequiredModal } from './AuthRequiredModal';
 import { CustomComboBuilderModal } from './CustomComboBuilderModal';
+import { PaymentModal } from '@/features/payment/components/PaymentModal';
 import type { Caterer, Package, PackageItem, Booking, MenuItem, MenuItemCategory } from '@/types/database';
 
 const CATEGORY_NAMES: Record<MenuItemCategory, string> = {
@@ -114,6 +115,7 @@ export const CatererDetailView: React.FC = () => {
   const [showComboBuilderModal, setShowComboBuilderModal] = useState(false);
   const [modalInitialDishId, setModalInitialDishId] = useState<string | undefined>(undefined);
   const [bookingSuccess, setBookingSuccess] = useState(false);
+  const [paymentBooking, setPaymentBooking] = useState<any | null>(null);
 
   useEffect(() => {
     if (!id) {
@@ -268,11 +270,25 @@ export const CatererDetailView: React.FC = () => {
     setSelectedPackage(null);
   };
 
-  const handleBookingCreated = (_booking: Booking) => {
+  const handleBookingCreated = (createdBooking: Booking) => {
+    const customComboSnapshot = selectedCustomCombo;
+    const packageSnapshot = selectedPackage;
     setSelectedPackage(null);
     setSelectedCustomCombo(null);
     setSelectedCustomDishIds(new Set());
-    setBookingSuccess(true);
+    setPaymentBooking({
+      ...createdBooking,
+      caterer_name: caterer?.business_name,
+      package_name: packageSnapshot?.name,
+      custom_combo_name: customComboSnapshot?.comboName,
+      customized_items: customComboSnapshot?.selectedItems,
+      guest_count: createdBooking.guest_count || serviceGuests,
+      event_date: createdBooking.event_date,
+      total_amount_paise:
+        (createdBooking as any).total_amount_paise ||
+        createdBooking.total_amount ||
+        (packageSnapshot ? packageSnapshot.price_per_plate * serviceGuests : customTotalCostPaise),
+    });
   };
 
   // Calculations for custom combo
@@ -1250,6 +1266,21 @@ export const CatererDetailView: React.FC = () => {
           catererName={caterer.business_name}
           packageName={authRequiredTarget}
           onClose={() => setAuthRequiredTarget(null)}
+        />
+      )}
+
+      {/* Instant Razorpay Payment Modal right upon booking creation */}
+      {paymentBooking && caterer && (
+        <PaymentModal
+          booking={paymentBooking}
+          onClose={() => {
+            setPaymentBooking(null);
+            setBookingSuccess(true);
+          }}
+          onPaymentSuccess={(_updated) => {
+            setPaymentBooking(null);
+            setBookingSuccess(true);
+          }}
         />
       )}
     </div>

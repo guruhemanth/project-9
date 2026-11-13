@@ -365,14 +365,14 @@ export const CustomerBookingsList: React.FC = () => {
                         />
                       )}
 
-                      {booking.status === 'accepted' && (
+                      {(booking.status === 'accepted' || booking.status === 'requested') && (
                         <button
                           type="button"
                           onClick={() => setPaymentBooking(booking)}
                           className="w-full flex items-center justify-center gap-1.5 rounded-lg bg-emerald-600 px-4 py-2 text-xs font-bold text-white hover:bg-emerald-700 shadow-xs transition"
                         >
                           <CreditCard className="h-3.5 w-3.5" />
-                          <span>Pay Advance / Full</span>
+                          <span>Pay 25% Advance / Full (Lock Deal)</span>
                         </button>
                       )}
 

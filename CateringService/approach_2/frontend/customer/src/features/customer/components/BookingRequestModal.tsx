@@ -347,7 +347,7 @@ export const BookingRequestModal: React.FC<Props> = ({
           </div>
 
           <p className="text-[11px] text-slate-500">
-            Payment will only be requested after the caterer reviews and accepts your booking within 48 hours.
+            You can pay the 25% advance immediately to lock the deal and reserve this date with the caterer.
           </p>
 
           <div className="flex justify-end gap-2 pt-2 border-t border-slate-100">
@@ -363,7 +363,7 @@ export const BookingRequestModal: React.FC<Props> = ({
               disabled={submitting}
               className="rounded-lg bg-emerald-600 px-4 py-2 text-xs font-semibold text-white hover:bg-emerald-700 disabled:opacity-50 transition shadow-xs"
             >
-              {submitting ? 'Sending Request...' : 'Confirm & Request Booking'}
+              {submitting ? 'Creating Booking...' : 'Proceed to Payment (25% Advance Lock)'}
             </button>
           </div>
         </form>

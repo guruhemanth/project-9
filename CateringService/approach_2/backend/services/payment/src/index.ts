@@ -117,9 +117,9 @@ export function buildPaymentServer() {
         return reply.status(403).send({ error: 'Forbidden: You do not own this booking' });
       }
 
-      if (booking.status !== 'accepted') {
+      if (booking.status !== 'accepted' && booking.status !== 'requested') {
         return reply.status(400).send({
-          error: `Cannot initiate payment for booking in '${booking.status}' status. Must be 'accepted'.`,
+          error: `Cannot initiate payment for booking in '${booking.status}' status. Must be 'accepted' or 'requested'.`,
         });
       }
 
