@@ -178,6 +178,8 @@ services:
       CHAT_SERVICE_URL: http://chat-service:4006
     ports:
       - "8080:8080"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
     depends_on:
       auth-service:
         condition: service_healthy

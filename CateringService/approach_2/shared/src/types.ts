@@ -250,3 +250,64 @@ export interface AdminCaterer extends Caterer {
   ownerPhone?: string;
   ownerEmail?: string;
 }
+
+// System Ops & Node Monitoring Contracts
+export type NodeHealthStatus = 'healthy' | 'degraded' | 'down';
+
+export interface ServiceNodeMetric {
+  id: string;
+  name: string;
+  serviceKey: string;
+  url: string;
+  port: number;
+  status: NodeHealthStatus;
+  latencyMs: number;
+  httpStatus?: number;
+  uptimeSeconds?: number;
+  lastChecked: string;
+  error?: string;
+  details?: Record<string, any>;
+}
+
+export interface HostServerMetrics {
+  totalMemBytes: number;
+  freeMemBytes: number;
+  usedMemPct: number;
+  loadAvg: [number, number, number];
+  uptimeSeconds: number;
+  cpuCount: number;
+  platform: string;
+  arch: string;
+  nodeVersion: string;
+}
+
+export interface ContainerInfo {
+  id: string;
+  name: string;
+  image: string;
+  state: string;
+  status: string;
+  created: number;
+  ports?: string;
+}
+
+export interface OpsNodesResponse {
+  timestamp: string;
+  host: HostServerMetrics;
+  nodes: ServiceNodeMetric[];
+  summary: {
+    totalNodes: number;
+    healthyCount: number;
+    degradedCount: number;
+    downCount: number;
+    avgLatencyMs: number;
+  };
+}
+
+export interface OpsLogsResponse {
+  container: string;
+  lines: string[];
+  tail: number;
+  timestamp: string;
+  source: 'docker-engine' | 'simulated';
+}

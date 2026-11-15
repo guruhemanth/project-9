@@ -12,6 +12,7 @@ import {
   loggerRedactionConfig,
   signInternalToken,
 } from '@caterconnect/shared';
+import { registerOpsRoutes } from './ops-router';
 
 // Public endpoints that do NOT require a JWT token (exact path / pattern match)
 const PUBLIC_EXACT_ROUTES = new Set([
@@ -296,6 +297,9 @@ export function buildGatewayServer() {
     rewritePrefix: '/api/admin/analytics',
     preHandler: adminAuthPreHandler,
   });
+
+  // 8. System Ops & Node Monitoring Endpoints
+  registerOpsRoutes(server, adminAuthPreHandler);
 
   return server;
 }

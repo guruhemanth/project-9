@@ -1,5 +1,13 @@
 import { apiFetch } from '@/lib/api-client';
-import type { PlatformAnalytics, AdminCaterer, CatererSettlement, Booking } from '@caterconnect/shared';
+import type {
+  PlatformAnalytics,
+  AdminCaterer,
+  CatererSettlement,
+  Booking,
+  OpsNodesResponse,
+  OpsLogsResponse,
+  ContainerInfo,
+} from '@caterconnect/shared';
 
 export async function fetchAdminAnalytics(): Promise<{ analytics: PlatformAnalytics }> {
   return apiFetch<{ analytics: PlatformAnalytics }>('/api/admin/analytics');
@@ -75,4 +83,26 @@ export async function updateCatererCommission(
     method: 'PATCH',
     body: JSON.stringify({ commissionPct }),
   });
+}
+
+// System Ops & Node Health Endpoints
+export async function fetchOpsNodesMetrics(): Promise<OpsNodesResponse> {
+  return apiFetch<OpsNodesResponse>('/api/admin/ops/nodes');
+}
+
+export async function fetchOpsContainers(): Promise<{ containers: ContainerInfo[]; source: string }> {
+  return apiFetch<{ containers: ContainerInfo[]; source: string }>('/api/admin/ops/containers');
+}
+
+export async function fetchOpsLogs(
+  container: string,
+  tail = 100,
+  filter?: string
+): Promise<OpsLogsResponse> {
+  const params = new URLSearchParams({
+    container,
+    tail: String(tail),
+  });
+  if (filter) params.append('filter', filter);
+  return apiFetch<OpsLogsResponse>(`/api/admin/ops/logs?${params.toString()}`);
 }

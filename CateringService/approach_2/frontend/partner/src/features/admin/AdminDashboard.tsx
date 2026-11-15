@@ -7,12 +7,14 @@ import {
   IndianRupee,
   RefreshCw,
   AlertCircle,
+  Activity,
 } from 'lucide-react';
 import { AdminAnalyticsCards } from './components/AdminAnalyticsCards';
 import { PendingCatererQueue } from './components/PendingCatererQueue';
 import { AdminBookingsList } from './components/AdminBookingsList';
 import { AdminSettlementsList } from './components/AdminSettlementsList';
 import { CommissionSettingsCard } from './components/CommissionSettingsCard';
+import { SystemOpsDashboard } from './components/SystemOpsDashboard';
 import {
   fetchAdminAnalytics,
   fetchAdminCaterers,
@@ -24,7 +26,7 @@ import {
 } from './api';
 import type { PlatformAnalytics, AdminCaterer, CatererSettlement, Booking } from '@caterconnect/shared';
 
-type AdminTab = 'analytics' | 'caterers' | 'bookings' | 'settlements' | 'settings';
+type AdminTab = 'analytics' | 'caterers' | 'bookings' | 'settlements' | 'settings' | 'ops';
 
 export const AdminDashboard: React.FC = () => {
   const [activeTab, setActiveTab] = useState<AdminTab>('analytics');
@@ -233,6 +235,18 @@ export const AdminDashboard: React.FC = () => {
           <Percent className="h-4 w-4" />
           <span>Commission Rules</span>
         </button>
+
+        <button
+          onClick={() => setActiveTab('ops')}
+          className={`flex items-center gap-2 px-4 py-2.5 text-xs sm:text-sm font-bold border-b-2 transition whitespace-nowrap ${
+            activeTab === 'ops'
+              ? 'border-purple-700 text-purple-800 bg-purple-50/50 rounded-t-lg'
+              : 'border-transparent text-slate-600 hover:text-slate-900'
+          }`}
+        >
+          <Activity className="h-4 w-4" />
+          <span>System Ops & Node Health</span>
+        </button>
       </div>
 
       {/* Tab Panels */}
@@ -330,6 +344,10 @@ export const AdminDashboard: React.FC = () => {
           caterers={caterers}
           onUpdated={(newVal) => setCommissionPct(newVal)}
         />
+      )}
+
+      {activeTab === 'ops' && (
+        <SystemOpsDashboard />
       )}
     </div>
   );
