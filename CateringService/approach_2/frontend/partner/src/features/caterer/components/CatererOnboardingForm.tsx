@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { ChefHat, AlertCircle, Plus, X, MapPin } from 'lucide-react';
+import { ChefHat, AlertCircle, Plus, X, MapPin, Landmark, ChevronDown, ChevronUp } from 'lucide-react';
 import { INDIAN_STATES_AND_UTS } from '@caterconnect/shared';
 import { submitCatererOnboarding } from '../api';
 import type { Caterer } from '@/types/database';
@@ -24,6 +24,16 @@ export const CatererOnboardingForm: React.FC<Props> = ({ ownerId, onSuccess }) =
   const [newCuisine, setNewCuisine] = useState('');
   const [fssaiDocName, setFssaiDocName] = useState('');
   const [idDocName, setIdDocName] = useState('');
+
+  // Optional Bank Details
+  const [showBankFields, setShowBankFields] = useState(false);
+  const [bankAccountHolderName, setBankAccountHolderName] = useState('');
+  const [bankAccountNumber, setBankAccountNumber] = useState('');
+  const [confirmAccountNumber, setConfirmAccountNumber] = useState('');
+  const [bankIfsc, setBankIfsc] = useState('');
+  const [bankName, setBankName] = useState('');
+  const [upiId, setUpiId] = useState('');
+
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -77,6 +87,33 @@ export const CatererOnboardingForm: React.FC<Props> = ({ ownerId, onSuccess }) =
       return;
     }
 
+    const hasAnyBankInput = Boolean(
+      bankAccountNumber.trim() ||
+      bankIfsc.trim() ||
+      bankAccountHolderName.trim() ||
+      bankName.trim() ||
+      upiId.trim()
+    );
+
+    if (hasAnyBankInput) {
+      if (!bankAccountNumber.trim() || !bankIfsc.trim()) {
+        setError('Both Bank Account Number and IFSC code are required to link your payout account.');
+        return;
+      }
+      if (bankAccountNumber.trim() !== confirmAccountNumber.trim()) {
+        setError('Bank account numbers do not match.');
+        return;
+      }
+      if (!/^\d{9,18}$/.test(bankAccountNumber.trim())) {
+        setError('Bank account number must be between 9 and 18 numeric digits.');
+        return;
+      }
+      if (!/^[A-Z]{4}0[A-Z0-9]{6}$/.test(bankIfsc.trim().toUpperCase())) {
+        setError('Invalid IFSC Code format. Must be 11 characters (e.g. SBIN0001234, HDFC0004567).');
+        return;
+      }
+    }
+
     setSubmitting(true);
 
     const payload = {
@@ -91,6 +128,11 @@ export const CatererOnboardingForm: React.FC<Props> = ({ ownerId, onSuccess }) =
       cuisines,
       fssaiNumber: fssaiNumber.trim(),
       gstNumber: gstNumber.trim() || null,
+      bankAccountHolderName: bankAccountHolderName.trim() || undefined,
+      bankAccountNumber: bankAccountNumber.trim() || undefined,
+      bankIfsc: bankIfsc.trim().toUpperCase() || undefined,
+      bankName: bankName.trim() || undefined,
+      upiId: upiId.trim() || undefined,
     };
 
     try {
@@ -112,6 +154,13 @@ export const CatererOnboardingForm: React.FC<Props> = ({ ownerId, onSuccess }) =
         rejection_reason: null,
         avg_rating: 0.0,
         review_count: 0,
+        bank_account_holder_name: bankAccountHolderName.trim() || null,
+        bank_account_number: bankAccountNumber.trim() || null,
+        bank_ifsc: bankIfsc.trim().toUpperCase() || null,
+        bank_name: bankName.trim() || null,
+        upi_id: upiId.trim() || null,
+        bank_verified: false,
+        bank_updated_at: hasAnyBankInput ? new Date().toISOString() : null,
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
       });
@@ -366,6 +415,120 @@ export const CatererOnboardingForm: React.FC<Props> = ({ ownerId, onSuccess }) =
               {idDocName && <span className="text-[11px] text-emerald-600 block mt-1">Uploaded: {idDocName}</span>}
             </div>
           </div>
+        </div>
+
+        {/* Bank Account Section (Optional at onboarding) */}
+        <div className="rounded-xl border border-slate-200 bg-slate-50/50 p-4 space-y-3">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2.5">
+              <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-emerald-100 text-emerald-800">
+                <Landmark className="h-4 w-4" />
+              </div>
+              <div>
+                <h3 className="text-xs font-bold uppercase text-slate-800">
+                  Direct Payout Bank Account{' '}
+                  <span className="text-[10px] font-normal text-slate-500 lowercase">(optional)</span>
+                </h3>
+                <p className="text-[11px] text-slate-500">
+                  Link your business bank account to receive booking payouts directly. Can also be configured later.
+                </p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setShowBankFields(!showBankFields)}
+              className="text-xs font-semibold text-emerald-700 hover:text-emerald-800 flex items-center gap-1 shrink-0 px-2.5 py-1 rounded-md bg-white border border-slate-200 shadow-2xs"
+            >
+              <span>{showBankFields ? 'Hide Details' : 'Add Bank Account'}</span>
+              {showBankFields ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+            </button>
+          </div>
+
+          {showBankFields && (
+            <div className="pt-3 border-t border-slate-200 space-y-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-[11px] font-semibold text-slate-600 uppercase">
+                    Account Holder Name
+                  </label>
+                  <input
+                    type="text"
+                    value={bankAccountHolderName}
+                    onChange={(e) => setBankAccountHolderName(e.target.value)}
+                    placeholder="As shown on bank statement / passbook"
+                    className="mt-1 w-full rounded-lg border border-slate-300 bg-white py-1.5 px-3 text-xs sm:text-sm focus:border-emerald-600 focus:outline-none focus:ring-1 focus:ring-emerald-600"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[11px] font-semibold text-slate-600 uppercase">
+                    Bank Name
+                  </label>
+                  <input
+                    type="text"
+                    value={bankName}
+                    onChange={(e) => setBankName(e.target.value)}
+                    placeholder="e.g. State Bank of India, HDFC, ICICI"
+                    className="mt-1 w-full rounded-lg border border-slate-300 bg-white py-1.5 px-3 text-xs sm:text-sm focus:border-emerald-600 focus:outline-none focus:ring-1 focus:ring-emerald-600"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-[11px] font-semibold text-slate-600 uppercase">
+                    Bank Account Number
+                  </label>
+                  <input
+                    type="password"
+                    value={bankAccountNumber}
+                    onChange={(e) => setBankAccountNumber(e.target.value.replace(/\D/g, ''))}
+                    placeholder="9-18 numeric digits"
+                    className="mt-1 w-full rounded-lg border border-slate-300 bg-white py-1.5 px-3 text-xs sm:text-sm font-mono focus:border-emerald-600 focus:outline-none focus:ring-1 focus:ring-emerald-600"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[11px] font-semibold text-slate-600 uppercase">
+                    Confirm Account Number
+                  </label>
+                  <input
+                    type="text"
+                    value={confirmAccountNumber}
+                    onChange={(e) => setConfirmAccountNumber(e.target.value.replace(/\D/g, ''))}
+                    placeholder="Re-enter account number"
+                    className="mt-1 w-full rounded-lg border border-slate-300 bg-white py-1.5 px-3 text-xs sm:text-sm font-mono focus:border-emerald-600 focus:outline-none focus:ring-1 focus:ring-emerald-600"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-[11px] font-semibold text-slate-600 uppercase">
+                    Bank IFSC Code (11 Chars)
+                  </label>
+                  <input
+                    type="text"
+                    maxLength={11}
+                    value={bankIfsc}
+                    onChange={(e) => setBankIfsc(e.target.value.toUpperCase())}
+                    placeholder="e.g. SBIN0001234"
+                    className="mt-1 w-full rounded-lg border border-slate-300 bg-white py-1.5 px-3 text-xs sm:text-sm font-mono uppercase focus:border-emerald-600 focus:outline-none focus:ring-1 focus:ring-emerald-600"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[11px] font-semibold text-slate-600 uppercase">
+                    UPI VPA ID (Optional)
+                  </label>
+                  <input
+                    type="text"
+                    value={upiId}
+                    onChange={(e) => setUpiId(e.target.value)}
+                    placeholder="e.g. caterer@okhdfcbank"
+                    className="mt-1 w-full rounded-lg border border-slate-300 bg-white py-1.5 px-3 text-xs sm:text-sm focus:border-emerald-600 focus:outline-none focus:ring-1 focus:ring-emerald-600"
+                  />
+                </div>
+              </div>
+            </div>
+          )}
         </div>
 
         <button

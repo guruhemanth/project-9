@@ -676,6 +676,27 @@ export function buildPaymentServer() {
 
       const { utrReference } = parseResult.data;
 
+      // Production Guard: Verify caterer has registered bank details before allowing disbursement
+      const checkRes = await pgPool.query(
+        `SELECT s.id, s.status, c.id as caterer_id, c.business_name, c.bank_account_number, c.bank_ifsc
+         FROM pay_svc.caterer_settlements s
+         JOIN caterer_svc.caterers c ON s.caterer_id = c.id
+         WHERE s.id = $1`,
+        [id]
+      );
+
+      if (checkRes.rows.length === 0) {
+        return reply.status(404).send({ error: 'Settlement not found' });
+      }
+
+      const settlementInfo = checkRes.rows[0];
+      if (!settlementInfo.bank_account_number || !settlementInfo.bank_ifsc) {
+        return reply.status(422).send({
+          error: `Cannot disburse payout: Caterer '${settlementInfo.business_name}' has not registered bank account details (Account Number & IFSC) yet. Payout held until bank account is registered.`,
+          code: 'BANK_DETAILS_MISSING',
+        });
+      }
+
       const updateRes = await pgPool.query(
         `UPDATE pay_svc.caterer_settlements
          SET status = 'settled', utr_reference = $1, settled_at = NOW(), updated_at = NOW()
@@ -709,6 +730,12 @@ export function buildPaymentServer() {
           s.commission_pct, s.commission_amount_paise, s.net_payout_paise,
           s.status, s.utr_reference, s.settled_at, s.created_at, s.updated_at,
           c.business_name as caterer_business_name,
+          c.bank_account_holder_name,
+          c.bank_account_number,
+          c.bank_ifsc,
+          c.bank_name,
+          c.upi_id,
+          c.bank_verified,
           b.event_date, b.guest_count
         FROM pay_svc.caterer_settlements s
         JOIN caterer_svc.caterers c ON s.caterer_id = c.id
@@ -727,6 +754,12 @@ export function buildPaymentServer() {
         bookingId: r.booking_id,
         catererId: r.caterer_id,
         catererBusinessName: r.caterer_business_name,
+        bankAccountHolderName: r.bank_account_holder_name,
+        bankAccountNumber: r.bank_account_number,
+        bankIfsc: r.bank_ifsc,
+        bankName: r.bank_name,
+        upiId: r.upi_id,
+        bankVerified: Boolean(r.bank_verified),
         grossAmountPaise: parseInt(r.gross_amount_paise, 10),
         commissionPct: parseFloat(r.commission_pct),
         commissionAmountPaise: parseInt(r.commission_amount_paise, 10),
@@ -826,6 +859,27 @@ export function buildPaymentServer() {
       }
 
       const { utrReference } = parseResult.data;
+
+      // Production Guard: Verify caterer has registered bank details before allowing disbursement
+      const checkRes = await pgPool.query(
+        `SELECT s.id, s.status, c.id as caterer_id, c.business_name, c.bank_account_number, c.bank_ifsc
+         FROM pay_svc.caterer_settlements s
+         JOIN caterer_svc.caterers c ON s.caterer_id = c.id
+         WHERE s.id = $1`,
+        [id]
+      );
+
+      if (checkRes.rows.length === 0) {
+        return reply.status(404).send({ error: 'Settlement not found' });
+      }
+
+      const settlementInfo = checkRes.rows[0];
+      if (!settlementInfo.bank_account_number || !settlementInfo.bank_ifsc) {
+        return reply.status(422).send({
+          error: `Cannot disburse payout: Caterer '${settlementInfo.business_name}' has not registered bank account details (Account Number & IFSC) yet. Payout held until bank account is registered.`,
+          code: 'BANK_DETAILS_MISSING',
+        });
+      }
 
       const updateRes = await pgPool.query(
         `UPDATE pay_svc.caterer_settlements

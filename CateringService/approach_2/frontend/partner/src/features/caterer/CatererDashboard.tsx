@@ -1,6 +1,17 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '@/lib/auth/AuthContext';
-import { Clock, CheckCircle2, Utensils, FileText, Calendar as CalendarIcon, MessageSquare, Settings, Loader2 } from 'lucide-react';
+import {
+  Clock,
+  CheckCircle2,
+  Utensils,
+  FileText,
+  Calendar as CalendarIcon,
+  MessageSquare,
+  Settings,
+  Loader2,
+  AlertCircle,
+  ArrowRight,
+} from 'lucide-react';
 import { formatPaiseToINR } from '@/lib/formatters';
 import { fetchCatererSettlements } from '@/features/payment/api';
 import { fetchCatererBookings, fetchCurrentCaterer, fetchCatererByOwner, acceptBooking, rejectBooking } from './api';
@@ -11,6 +22,7 @@ import { IncomingRequestsQueue } from './components/IncomingRequestsQueue';
 import { BlackoutDateManager } from './components/BlackoutDateManager';
 import { MenuItemsManager } from './components/MenuItemsManager';
 import { CatererOrderSettings } from './components/CatererOrderSettings';
+import { BankDetailsManager } from './components/BankDetailsManager';
 import { PartnerChatHub } from '@/features/chat/PartnerChatHub';
 import type { Caterer, Package, PackageItem, Booking } from '@/types/database';
 
@@ -29,49 +41,41 @@ export const CatererDashboard: React.FC = () => {
   const [settlementData, setSettlementData] = useState<any>(null);
 
   // Load authenticated caterer profile and packages dynamically
-  useEffect(() => {
-    let isMounted = true;
-    async function loadCatererProfile() {
-      if (!user) {
-        setLoadingCaterer(false);
-        return;
-      }
-      setLoadingCaterer(true);
-      try {
-        let res;
-        try {
-          res = await fetchCurrentCaterer();
-        } catch (meErr) {
-          if (user.id) {
-            res = await fetchCatererByOwner(user.id);
-          } else {
-            throw meErr;
-          }
-        }
-
-        if (isMounted && res?.caterer) {
-          setCaterer(res.caterer);
-          if (res.packages && Array.isArray(res.packages)) {
-            setPackages(res.packages);
-          }
-        }
-      } catch (err) {
-        console.warn('No active caterer profile found for this user, prompting onboarding:', err);
-        if (isMounted) {
-          setCaterer(null);
-        }
-      } finally {
-        if (isMounted) {
-          setLoadingCaterer(false);
-        }
-      }
+  const loadCatererProfile = useCallback(async () => {
+    if (!user) {
+      setLoadingCaterer(false);
+      return;
     }
+    setLoadingCaterer(true);
+    try {
+      let res;
+      try {
+        res = await fetchCurrentCaterer();
+      } catch (meErr) {
+        if (user.id) {
+          res = await fetchCatererByOwner(user.id);
+        } else {
+          throw meErr;
+        }
+      }
 
+      if (res?.caterer) {
+        setCaterer(res.caterer);
+        if (res.packages && Array.isArray(res.packages)) {
+          setPackages(res.packages);
+        }
+      }
+    } catch (err) {
+      console.warn('No active caterer profile found for this user, prompting onboarding:', err);
+      setCaterer(null);
+    } finally {
+      setLoadingCaterer(false);
+    }
+  }, [user]);
+
+  useEffect(() => {
     loadCatererProfile();
-    return () => {
-      isMounted = false;
-    };
-  }, [user?.id]);
+  }, [loadCatererProfile]);
 
   const loadBookings = useCallback(async () => {
     if (!caterer?.id) return;
@@ -228,6 +232,35 @@ export const CatererDashboard: React.FC = () => {
         </div>
       )}
 
+      {/* Missing Bank Details Warning Banner */}
+      {(!caterer.bank_account_number || !caterer.bank_ifsc) && (
+        <div className="rounded-xl border border-amber-300 bg-amber-50 p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 shadow-xs">
+          <div className="flex items-start sm:items-center gap-3">
+            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-amber-500 text-white">
+              <AlertCircle className="h-5 w-5" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <h2 className="text-sm font-bold text-amber-950">Action Required: Link Bank Account for Payouts</h2>
+                <span className="rounded-full bg-amber-200 px-2 py-0.5 text-[10px] font-bold text-amber-900 uppercase">
+                  Payouts Paused
+                </span>
+              </div>
+              <p className="text-xs text-amber-800 mt-0.5">
+                To receive NEFT/IMPS earnings for completed catering events directly into your account, please register your IFSC and Account Number.
+              </p>
+            </div>
+          </div>
+          <button
+            onClick={() => setActiveTab('earnings')}
+            className="shrink-0 flex items-center justify-center gap-1.5 rounded-lg bg-amber-600 hover:bg-amber-700 text-white text-xs font-semibold px-4 py-2 transition shadow-xs"
+          >
+            <span>Set Up Bank Account</span>
+            <ArrowRight className="h-3.5 w-3.5" />
+          </button>
+        </div>
+      )}
+
       {/* Tabs */}
       <div className="flex border-b border-slate-200">
         <button
@@ -355,6 +388,13 @@ export const CatererDashboard: React.FC = () => {
 
       {activeTab === 'earnings' && (
         <div className="space-y-6">
+          {/* Bank Account Registration & Settlement Manager */}
+          <BankDetailsManager
+            catererId={caterer.id}
+            initialCaterer={caterer}
+            onUpdated={loadCatererProfile}
+          />
+
           <div className="rounded-xl border border-slate-200 bg-white p-6 shadow-xs">
             <h2 className="text-sm font-bold text-slate-900">Earnings & Payout Ledger</h2>
             <div className="mt-4 grid grid-cols-2 sm:grid-cols-4 gap-4">

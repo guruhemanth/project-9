@@ -57,3 +57,17 @@ export async function removeBlackoutDate(catererId: string, date: string) {
     method: 'DELETE',
   });
 }
+
+export async function fetchCatererBankDetails(catererId: string) {
+  return apiFetch<{ bankDetails: any }>(`/api/caterers/${catererId}/bank-details`);
+}
+
+export async function updateCatererBankDetails(catererId: string, data: any) {
+  return apiFetch<{ success: boolean; message: string; bankDetails: any }>(
+    `/api/caterers/${catererId}/bank-details`,
+    {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    }
+  );
+}

@@ -65,8 +65,27 @@ export interface Caterer {
   maxGuests?: number;
   leadTimeDays?: number;
   allowsCustomCombo?: boolean;
+  bankAccountHolderName?: string | null;
+  bankAccountNumber?: string | null;
+  bankIfsc?: string | null;
+  bankName?: string | null;
+  upiId?: string | null;
+  bankChequeUrl?: string | null;
+  bankVerified?: boolean;
+  bankUpdatedAt?: string | null;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface CatererBankDetails {
+  bankAccountHolderName?: string | null;
+  bankAccountNumber?: string | null;
+  bankIfsc?: string | null;
+  bankName?: string | null;
+  upiId?: string | null;
+  bankChequeUrl?: string | null;
+  bankVerified?: boolean;
+  bankUpdatedAt?: string | null;
 }
 
 export interface PackageItem {
@@ -140,6 +159,13 @@ export interface CatererSettlement {
   settledAt: string | null;
   createdAt: string;
   updatedAt: string;
+  catererBusinessName?: string;
+  bankAccountHolderName?: string | null;
+  bankAccountNumber?: string | null;
+  bankIfsc?: string | null;
+  bankName?: string | null;
+  upiId?: string | null;
+  bankVerified?: boolean;
 }
 
 export interface Package {

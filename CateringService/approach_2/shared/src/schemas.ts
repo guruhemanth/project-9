@@ -24,6 +24,20 @@ export const catererOnboardingSchema = z.object({
   cuisines: z.array(z.string()).min(1, 'Select at least one cuisine'),
   fssaiNumber: z.string().regex(/^\d{14}$/, 'FSSAI license must be exactly 14 numeric digits'),
   gstNumber: z.string().regex(/^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1}$/, 'Invalid GST format').optional().nullable(),
+  bankAccountHolderName: z.string().min(2).max(100).optional().nullable(),
+  bankAccountNumber: z.string().regex(/^\d{9,18}$/, 'Bank account number must be between 9 and 18 digits').optional().nullable(),
+  bankIfsc: z.string().regex(/^[a-zA-Z]{4}0[a-zA-Z0-9]{6}$/, 'Invalid IFSC code format (e.g. SBIN0001234)').optional().nullable(),
+  bankName: z.string().min(2).max(100).optional().nullable(),
+  upiId: z.string().regex(/^[\w.-]+@[\w.-]+$/, 'Invalid UPI VPA format (e.g. user@bank)').optional().nullable(),
+});
+
+export const catererBankDetailsSchema = z.object({
+  bankAccountHolderName: z.string().min(2, 'Account holder name must be at least 2 characters').max(100),
+  bankAccountNumber: z.string().regex(/^\d{9,18}$/, 'Bank account number must be between 9 and 18 digits'),
+  bankIfsc: z.string().regex(/^[a-zA-Z]{4}0[a-zA-Z0-9]{6}$/, 'Invalid IFSC code format (e.g. SBIN0001234)'),
+  bankName: z.string().min(2, 'Bank name is required').max(100).optional().nullable(),
+  upiId: z.string().regex(/^[\w.-]+@[\w.-]+$/, 'Invalid UPI VPA format (e.g. caterer@bank)').optional().nullable(),
+  bankChequeUrl: z.string().optional().nullable(),
 });
 
 export const packageSchema = z.object({

@@ -4,6 +4,7 @@ import fastifyHelmet from '@fastify/helmet';
 import { pgPool } from './db';
 import {
   catererOnboardingSchema,
+  catererBankDetailsSchema,
   packageSchema,
   blackoutDateSchema,
   CatererStatus,
@@ -246,6 +247,14 @@ export function buildCatererServer() {
         lead_time_days: c.lead_time_days || 2,
         allows_custom_combo: c.allows_custom_combo ?? true,
         commission_pct: c.commission_pct || 15.0,
+        bank_account_holder_name: c.bank_account_holder_name,
+        bank_account_number: c.bank_account_number,
+        bank_ifsc: c.bank_ifsc,
+        bank_name: c.bank_name,
+        upi_id: c.upi_id,
+        bank_cheque_url: c.bank_cheque_url,
+        bank_verified: c.bank_verified ?? false,
+        bank_updated_at: c.bank_updated_at,
         created_at: c.created_at,
         updated_at: c.updated_at,
       },
@@ -437,8 +446,8 @@ export function buildCatererServer() {
 
       const insertRes = await pgPool.query(
         `INSERT INTO caterer_svc.caterers 
-         (owner_id, business_name, description, city, state, pincode, address, service_areas, cuisines, fssai_number, gst_number, status)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'pending')
+         (owner_id, business_name, description, city, state, pincode, address, service_areas, cuisines, fssai_number, gst_number, status, bank_account_holder_name, bank_account_number, bank_ifsc, bank_name, upi_id, bank_updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'pending', $12, $13, $14, $15, $16, $17)
          RETURNING *`,
         [
           ownerId,
@@ -452,6 +461,12 @@ export function buildCatererServer() {
           data.cuisines,
           data.fssaiNumber,
           data.gstNumber || null,
+          data.bankAccountHolderName ? data.bankAccountHolderName.trim() : null,
+          data.bankAccountNumber ? data.bankAccountNumber.trim() : null,
+          data.bankIfsc ? data.bankIfsc.toUpperCase().trim() : null,
+          data.bankName ? data.bankName.trim() : null,
+          data.upiId ? data.upiId.trim() : null,
+          (data.bankAccountNumber && data.bankIfsc) ? new Date() : null,
         ]
       );
 
@@ -509,6 +524,134 @@ export function buildCatererServer() {
         rejectionReason: updateRes.rows[0].rejection_reason,
       },
     });
+  });
+
+  // Get caterer bank details (Owner or Admin only)
+  server.get('/api/caterers/:id/bank-details', async (req, reply) => {
+    try {
+      const authUser = getAuthenticatedUser(req);
+      if (!authUser) {
+        return reply.status(401).send({ error: 'Unauthorized: Authentication required' });
+      }
+
+      const { id } = req.params as { id: string };
+      const isOwner = await assertCatererOwner(id, authUser.userId, authUser.role);
+      if (!isOwner) {
+        return reply.status(403).send({ error: 'Forbidden: You do not own this caterer profile' });
+      }
+
+      const res = await pgPool.query(
+        `SELECT bank_account_holder_name, bank_account_number, bank_ifsc, bank_name, upi_id, bank_cheque_url, bank_verified, bank_updated_at
+         FROM caterer_svc.caterers WHERE id = $1`,
+        [id]
+      );
+
+      if (res.rows.length === 0) {
+        return reply.status(404).send({ error: 'Caterer not found' });
+      }
+
+      const row = res.rows[0];
+      return reply.send({
+        bankDetails: {
+          bankAccountHolderName: row.bank_account_holder_name,
+          bankAccountNumber: row.bank_account_number,
+          bankIfsc: row.bank_ifsc,
+          bankName: row.bank_name,
+          upiId: row.upi_id,
+          bankChequeUrl: row.bank_cheque_url,
+          bankVerified: row.bank_verified ?? false,
+          bankUpdatedAt: row.bank_updated_at,
+          hasBankDetails: Boolean(row.bank_account_number && row.bank_ifsc),
+        },
+      });
+    } catch (err: any) {
+      req.log.error(err);
+      return reply.status(500).send({ error: 'Failed to retrieve bank details' });
+    }
+  });
+
+  // Save / Update caterer bank details (Owner or Admin only)
+  server.put('/api/caterers/:id/bank-details', async (req, reply) => {
+    try {
+      const authUser = getAuthenticatedUser(req);
+      if (!authUser) {
+        return reply.status(401).send({ error: 'Unauthorized: Authentication required' });
+      }
+
+      const { id } = req.params as { id: string };
+      const isOwner = await assertCatererOwner(id, authUser.userId, authUser.role);
+      if (!isOwner) {
+        return reply.status(403).send({ error: 'Forbidden: You do not own this caterer profile' });
+      }
+
+      const parseResult = catererBankDetailsSchema.safeParse(req.body);
+      if (!parseResult.success) {
+        return reply.status(400).send({
+          error: 'ValidationError',
+          details: parseResult.error.flatten().fieldErrors,
+        });
+      }
+
+      // Safeguard: Check if any settlement is currently in 'processing' status
+      const activeSettlements = await pgPool.query(
+        `SELECT id FROM pay_svc.caterer_settlements WHERE caterer_id = $1 AND status = 'processing'`,
+        [id]
+      );
+      if (activeSettlements.rows.length > 0) {
+        return reply.status(409).send({
+          error: 'Cannot update bank details while a payout settlement is actively processing. Please wait until in-flight disbursements complete.',
+        });
+      }
+
+      const data = parseResult.data;
+      const ifscUpper = data.bankIfsc.toUpperCase().trim();
+
+      const updateRes = await pgPool.query(
+        `UPDATE caterer_svc.caterers
+         SET bank_account_holder_name = $1,
+             bank_account_number = $2,
+             bank_ifsc = $3,
+             bank_name = $4,
+             upi_id = $5,
+             bank_cheque_url = $6,
+             bank_updated_at = NOW(),
+             updated_at = NOW()
+         WHERE id = $7
+         RETURNING id, bank_account_holder_name, bank_account_number, bank_ifsc, bank_name, upi_id, bank_verified, bank_updated_at`,
+        [
+          data.bankAccountHolderName.trim(),
+          data.bankAccountNumber.trim(),
+          ifscUpper,
+          data.bankName ? data.bankName.trim() : null,
+          data.upiId ? data.upiId.trim() : null,
+          data.bankChequeUrl || null,
+          id,
+        ]
+      );
+
+      if (updateRes.rows.length === 0) {
+        return reply.status(404).send({ error: 'Caterer not found' });
+      }
+
+      const row = updateRes.rows[0];
+      return reply.send({
+        success: true,
+        message: 'Bank account details saved successfully',
+        bankDetails: {
+          bankAccountHolderName: row.bank_account_holder_name,
+          bankAccountNumber: row.bank_account_number,
+          bankIfsc: row.bank_ifsc,
+          bankName: row.bank_name,
+          upiId: row.upi_id,
+          bankVerified: row.bank_verified,
+          bankUpdatedAt: row.bank_updated_at,
+          hasBankDetails: true,
+        },
+      });
+    } catch (err: any) {
+      req.log.error(err);
+      return reply.status(500).send({ error: 'Failed to update bank details' });
+    }
   });
 
   // Admin update caterer settings (e.g. commission_pct) - ADMIN GUARD

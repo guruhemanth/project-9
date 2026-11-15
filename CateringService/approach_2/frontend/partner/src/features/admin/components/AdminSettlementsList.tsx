@@ -1,5 +1,16 @@
 import React, { useState } from 'react';
-import { CheckCircle2, Clock, Send, ShieldCheck, X } from 'lucide-react';
+import {
+  CheckCircle2,
+  Clock,
+  Send,
+  ShieldCheck,
+  X,
+  Landmark,
+  Copy,
+  Check,
+  AlertTriangle,
+  AlertCircle,
+} from 'lucide-react';
 import { formatPaiseToINR, formatIndianDate } from '@/lib/formatters';
 import type { CatererSettlement } from '@caterconnect/shared';
 
@@ -22,6 +33,16 @@ export const AdminSettlementsList: React.FC<Props> = ({
   const [selectedSettlement, setSelectedSettlement] = useState<(CatererSettlement & { catererBusinessName?: string }) | null>(null);
   const [utrInput, setUtrInput] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const [copiedField, setCopiedField] = useState<string | null>(null);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+
+  const copyToClipboard = (text: string, fieldId: string) => {
+    navigator.clipboard.writeText(text);
+    setCopiedField(fieldId);
+    setTimeout(() => {
+      setCopiedField(null);
+    }, 2000);
+  };
 
   const filtered = settlements.filter((s) => {
     if (filter === 'all') return true;
@@ -31,11 +52,18 @@ export const AdminSettlementsList: React.FC<Props> = ({
 
   const handleConfirmDisburse = async () => {
     if (!selectedSettlement || !utrInput.trim()) return;
+    if (!selectedSettlement.bankAccountNumber || !selectedSettlement.bankIfsc) {
+      setErrorMessage('Cannot disburse: Caterer has not linked a bank account.');
+      return;
+    }
     setSubmitting(true);
+    setErrorMessage(null);
     try {
       await onDisburse(selectedSettlement.id, utrInput.trim());
       setSelectedSettlement(null);
       setUtrInput('');
+    } catch (err: any) {
+      setErrorMessage(err.message || 'Disbursement failed. Please verify bank details.');
     } finally {
       setSubmitting(false);
     }
@@ -117,6 +145,53 @@ export const AdminSettlementsList: React.FC<Props> = ({
                     {s.settledAt && ` • Settled: ${formatIndianDate(s.settledAt)}`}
                   </p>
                 )}
+
+                {/* Bank Account Details or Missing Alert */}
+                {s.bankAccountNumber && s.bankIfsc ? (
+                  <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px] bg-slate-50 border border-slate-200 rounded-lg p-2">
+                    <div className="flex items-center gap-1 font-semibold text-slate-800">
+                      <Landmark className="h-3.5 w-3.5 text-slate-600" />
+                      <span>{s.bankName || 'Bank'}</span>
+                    </div>
+                    <span className="text-slate-300">|</span>
+                    <div className="flex items-center gap-1 font-mono text-slate-700">
+                      <span>A/C: {s.bankAccountNumber}</span>
+                      <button
+                        type="button"
+                        title="Copy Account Number"
+                        onClick={() => copyToClipboard(s.bankAccountNumber!, `ac-${s.id}`)}
+                        className="text-slate-400 hover:text-slate-700 transition"
+                      >
+                        {copiedField === `ac-${s.id}` ? <Check className="h-3 w-3 text-emerald-600" /> : <Copy className="h-3 w-3" />}
+                      </button>
+                    </div>
+                    <span className="text-slate-300">|</span>
+                    <div className="flex items-center gap-1 font-mono text-slate-700">
+                      <span>IFSC: {s.bankIfsc}</span>
+                      <button
+                        type="button"
+                        title="Copy IFSC Code"
+                        onClick={() => copyToClipboard(s.bankIfsc!, `ifsc-${s.id}`)}
+                        className="text-slate-400 hover:text-slate-700 transition"
+                      >
+                        {copiedField === `ifsc-${s.id}` ? <Check className="h-3 w-3 text-emerald-600" /> : <Copy className="h-3 w-3" />}
+                      </button>
+                    </div>
+                    {s.bankAccountHolderName && (
+                      <>
+                        <span className="text-slate-300">|</span>
+                        <span className="text-slate-600 truncate max-w-[150px]">
+                          Holder: {s.bankAccountHolderName}
+                        </span>
+                      </>
+                    )}
+                  </div>
+                ) : (
+                  <div className="mt-2 inline-flex items-center gap-1 rounded bg-rose-50 text-rose-700 border border-rose-200 px-2 py-1 text-[11px] font-medium">
+                    <AlertTriangle className="h-3.5 w-3.5 text-rose-600 shrink-0" />
+                    <span>No bank account linked by caterer (Disbursal locked)</span>
+                  </div>
+                )}
               </div>
 
               {/* Financial Breakdown & Disburse Action */}
@@ -136,11 +211,22 @@ export const AdminSettlementsList: React.FC<Props> = ({
                 {s.status !== 'settled' && (
                   <button
                     type="button"
+                    disabled={!s.bankAccountNumber || !s.bankIfsc}
+                    title={
+                      !s.bankAccountNumber || !s.bankIfsc
+                        ? 'Cannot disburse: Caterer has not linked a bank account'
+                        : 'Record NEFT/IMPS disbursal'
+                    }
                     onClick={() => {
                       setSelectedSettlement(s);
+                      setErrorMessage(null);
                       setUtrInput(`UTR_SBIN_${Date.now().toString().slice(-6)}`);
                     }}
-                    className="flex items-center gap-1.5 rounded-lg bg-teal-700 px-3.5 py-2 text-xs font-semibold text-white shadow-xs hover:bg-teal-800 transition"
+                    className={`flex items-center gap-1.5 rounded-lg px-3.5 py-2 text-xs font-semibold shadow-xs transition ${
+                      !s.bankAccountNumber || !s.bankIfsc
+                        ? 'bg-slate-200 text-slate-400 cursor-not-allowed'
+                        : 'bg-teal-700 text-white hover:bg-teal-800'
+                    }`}
                   >
                     <Send className="h-3.5 w-3.5" />
                     <span>Disburse</span>
@@ -175,6 +261,88 @@ export const AdminSettlementsList: React.FC<Props> = ({
               <div className="text-[11px] text-teal-700">Transfer funds to caterer bank account via NEFT / RTGS / IMPS.</div>
             </div>
 
+            {/* Beneficiary Bank Account Details */}
+            <div className="bg-slate-50 p-3.5 rounded-xl border border-slate-200 space-y-2 text-xs">
+              <div className="flex items-center justify-between font-bold text-slate-800 border-b border-slate-200 pb-1.5">
+                <span className="flex items-center gap-1.5">
+                  <Landmark className="h-4 w-4 text-slate-600" />
+                  Beneficiary Bank Account
+                </span>
+                {selectedSettlement.bankVerified ? (
+                  <span className="text-[10px] font-bold text-emerald-700 bg-emerald-100 px-2 py-0.5 rounded-full">
+                    Verified
+                  </span>
+                ) : (
+                  <span className="text-[10px] font-bold text-slate-600 bg-slate-200 px-2 py-0.5 rounded-full">
+                    Registered
+                  </span>
+                )}
+              </div>
+
+              {selectedSettlement.bankAccountNumber && selectedSettlement.bankIfsc ? (
+                <div className="grid grid-cols-2 gap-2 text-slate-700 text-[11px]">
+                  <div>
+                    <span className="text-slate-400 block text-[10px] uppercase font-semibold">Account Holder</span>
+                    <span className="font-semibold text-slate-900">
+                      {selectedSettlement.bankAccountHolderName || selectedSettlement.catererBusinessName}
+                    </span>
+                  </div>
+                  <div>
+                    <span className="text-slate-400 block text-[10px] uppercase font-semibold">Bank Name</span>
+                    <span className="font-semibold text-slate-900">
+                      {selectedSettlement.bankName || 'Not Specified'}
+                    </span>
+                  </div>
+                  <div>
+                    <span className="text-slate-400 block text-[10px] uppercase font-semibold">Account Number</span>
+                    <div className="flex items-center gap-1 font-mono font-bold text-slate-900">
+                      <span>{selectedSettlement.bankAccountNumber}</span>
+                      <button
+                        type="button"
+                        title="Copy Account Number"
+                        onClick={() => copyToClipboard(selectedSettlement.bankAccountNumber!, 'modal-ac')}
+                        className="text-slate-400 hover:text-slate-700 transition"
+                      >
+                        {copiedField === 'modal-ac' ? <Check className="h-3 w-3 text-emerald-600" /> : <Copy className="h-3 w-3" />}
+                      </button>
+                    </div>
+                  </div>
+                  <div>
+                    <span className="text-slate-400 block text-[10px] uppercase font-semibold">IFSC Code</span>
+                    <div className="flex items-center gap-1 font-mono font-bold text-slate-900">
+                      <span>{selectedSettlement.bankIfsc}</span>
+                      <button
+                        type="button"
+                        title="Copy IFSC Code"
+                        onClick={() => copyToClipboard(selectedSettlement.bankIfsc!, 'modal-ifsc')}
+                        className="text-slate-400 hover:text-slate-700 transition"
+                      >
+                        {copiedField === 'modal-ifsc' ? <Check className="h-3 w-3 text-emerald-600" /> : <Copy className="h-3 w-3" />}
+                      </button>
+                    </div>
+                  </div>
+                  {selectedSettlement.upiId && (
+                    <div className="col-span-2">
+                      <span className="text-slate-400 block text-[10px] uppercase font-semibold">UPI ID</span>
+                      <span className="font-mono text-slate-800">{selectedSettlement.upiId}</span>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div className="rounded-lg bg-rose-50 p-2.5 text-xs text-rose-800 border border-rose-200 flex items-center gap-2">
+                  <AlertCircle className="h-4 w-4 shrink-0 text-rose-600" />
+                  <span>Missing bank details! Caterer must provide account number and IFSC code before disbursement.</span>
+                </div>
+              )}
+            </div>
+
+            {errorMessage && (
+              <div className="rounded-lg bg-red-50 p-2.5 text-xs text-red-700 border border-red-200 flex items-center gap-2">
+                <AlertCircle className="h-4 w-4 shrink-0 text-red-600" />
+                <span>{errorMessage}</span>
+              </div>
+            )}
+
             <div className="space-y-1.5">
               <label className="text-xs font-semibold text-slate-700">
                 Bank UTR / Transaction Reference Number:
@@ -198,7 +366,7 @@ export const AdminSettlementsList: React.FC<Props> = ({
               </button>
               <button
                 type="button"
-                disabled={!utrInput.trim() || submitting}
+                disabled={!utrInput.trim() || submitting || !selectedSettlement.bankAccountNumber || !selectedSettlement.bankIfsc}
                 onClick={handleConfirmDisburse}
                 className="rounded-lg bg-teal-700 px-4 py-2 text-xs font-semibold text-white hover:bg-teal-800 disabled:opacity-50 transition"
               >

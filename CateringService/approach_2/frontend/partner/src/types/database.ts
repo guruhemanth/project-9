@@ -52,6 +52,14 @@ export interface Caterer {
   max_guests?: number;
   lead_time_days?: number;
   allows_custom_combo?: boolean;
+  bank_account_holder_name?: string | null;
+  bank_account_number?: string | null;
+  bank_ifsc?: string | null;
+  bank_name?: string | null;
+  upi_id?: string | null;
+  bank_cheque_url?: string | null;
+  bank_verified?: boolean;
+  bank_updated_at?: string | null;
   created_at: string;
   updated_at: string;
 }
