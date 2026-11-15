@@ -56,6 +56,22 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     loadUser();
   }, [token]);
 
+  // Gracefully handle runtime session expiration events fired by apiFetch
+  useEffect(() => {
+    const handleSessionExpired = (event: Event) => {
+      const customEvt = event as CustomEvent<{ message?: string }>;
+      console.warn('Session expired event received:', customEvt.detail?.message);
+      localStorage.removeItem('caterconnect_token');
+      setToken(null);
+      setUser(null);
+    };
+
+    window.addEventListener('caterconnect:session-expired', handleSessionExpired);
+    return () => {
+      window.removeEventListener('caterconnect:session-expired', handleSessionExpired);
+    };
+  }, []);
+
   const login = (newToken: string, newUser: UserProfile) => {
     localStorage.setItem('caterconnect_token', newToken);
     setToken(newToken);

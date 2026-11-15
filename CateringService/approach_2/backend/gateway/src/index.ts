@@ -72,6 +72,23 @@ export function buildGatewayServer() {
       return 100;
     },
     timeWindow: '1 minute',
+    errorResponseBuilder: (req, context) => {
+      const retryAfterSeconds = Math.max(1, Math.ceil(context.ttl / 1000));
+      const isAuth = req.url?.startsWith('/api/auth/login') || req.url?.startsWith('/api/auth/register');
+      const cause = isAuth
+        ? `Too many sign-in / registration attempts from your IP (maximum ${context.max} requests per minute allowed for security).`
+        : `Too many API requests sent in a short period (maximum ${context.max} requests per minute allowed).`;
+      const message = `${cause} Please wait ${retryAfterSeconds} second${retryAfterSeconds === 1 ? '' : 's'} before trying again.`;
+
+      return {
+        statusCode: 429,
+        error: 'Too Many Requests',
+        code: 'RATE_LIMIT_EXCEEDED',
+        cause,
+        retryAfter: retryAfterSeconds,
+        message,
+      };
+    },
   });
 
   server.register(fastifyCors, buildCorsOptions(env.ALLOWED_ORIGINS, env.NODE_ENV));
@@ -116,8 +133,27 @@ export function buildGatewayServer() {
         { userId: user.sub, role: user.role, email: user.email },
         env.JWT_SECRET
       );
-    } catch {
-      return reply.status(401).send({ error: 'Unauthorized: Authentication required' });
+    } catch (err: any) {
+      const isExpired =
+        err?.code === 'FAST_JWT_EXPIRED' ||
+        err?.name === 'TokenExpiredError' ||
+        (err?.message && err.message.toLowerCase().includes('expired'));
+
+      if (isExpired) {
+        return reply.status(401).send({
+          statusCode: 401,
+          error: 'Unauthorized',
+          code: 'SESSION_EXPIRED',
+          message: 'Your session has expired. Please sign in again to continue.',
+        });
+      }
+
+      return reply.status(401).send({
+        statusCode: 401,
+        error: 'Unauthorized',
+        code: 'UNAUTHORIZED',
+        message: 'Unauthorized: Authentication required',
+      });
     }
   };
 
@@ -127,7 +163,12 @@ export function buildGatewayServer() {
       await req.jwtVerify();
       const user = req.user as { sub: string; role: string; email?: string };
       if (user.role !== 'admin') {
-        return reply.status(403).send({ error: 'Forbidden: Admin access required' });
+        return reply.status(403).send({
+          statusCode: 403,
+          error: 'Forbidden',
+          code: 'FORBIDDEN',
+          message: 'Forbidden: Admin access required',
+        });
       }
       req.headers['x-user-id'] = user.sub;
       req.headers['x-user-role'] = user.role;
@@ -135,8 +176,27 @@ export function buildGatewayServer() {
         { userId: user.sub, role: 'admin', email: user.email },
         env.JWT_SECRET
       );
-    } catch {
-      return reply.status(401).send({ error: 'Unauthorized: Authentication required' });
+    } catch (err: any) {
+      const isExpired =
+        err?.code === 'FAST_JWT_EXPIRED' ||
+        err?.name === 'TokenExpiredError' ||
+        (err?.message && err.message.toLowerCase().includes('expired'));
+
+      if (isExpired) {
+        return reply.status(401).send({
+          statusCode: 401,
+          error: 'Unauthorized',
+          code: 'SESSION_EXPIRED',
+          message: 'Your administrator session has expired. Please sign in again.',
+        });
+      }
+
+      return reply.status(401).send({
+        statusCode: 401,
+        error: 'Unauthorized',
+        code: 'UNAUTHORIZED',
+        message: 'Unauthorized: Authentication required',
+      });
     }
   };
 

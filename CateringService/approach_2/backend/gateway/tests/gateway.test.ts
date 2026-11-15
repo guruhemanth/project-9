@@ -120,4 +120,61 @@ describe('API Gateway Integration', () => {
     expect(res.headers['x-frame-options']).toBe('SAMEORIGIN');
     expect(res.headers['strict-transport-security']).toBeDefined();
   });
+
+  it('handles expired tokens with SESSION_EXPIRED code and meaningful session message', async () => {
+    // Generate an already expired token (sub: user-1, role: customer, exp in the past)
+    const expiredToken = app.jwt.sign({
+      sub: 'test-user-id',
+      role: 'customer',
+      exp: Math.floor(Date.now() / 1000) - 60, // Expired 60s ago
+    });
+
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/bookings/customer',
+      headers: {
+        authorization: `Bearer ${expiredToken}`,
+      },
+    });
+
+    expect(res.statusCode).toBe(401);
+    const body = res.json();
+    expect(body.code).toBe('SESSION_EXPIRED');
+    expect(body.message).toContain('session has expired');
+  });
+
+  it('surfaces rate limit errors with meaningful cause string and retry duration', async () => {
+    // Hit /api/auth/login with rapid requests to trigger the 10 req/min rate limit
+    let hitRateLimit = false;
+    let rateLimitResponse: any = null;
+
+    for (let i = 0; i < 15; i++) {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/auth/login',
+        headers: {
+          'x-forwarded-for': '203.0.113.195', // Distinct test IP
+        },
+        payload: {
+          email: 'ratelimit-test@caterconnect.in',
+          password: 'SecretPassword123!',
+        },
+      });
+
+      if (res.statusCode === 429) {
+        hitRateLimit = true;
+        rateLimitResponse = res.json();
+        break;
+      }
+    }
+
+    expect(hitRateLimit).toBe(true);
+    expect(rateLimitResponse).toBeDefined();
+    expect(rateLimitResponse.statusCode).toBe(429);
+    expect(rateLimitResponse.code).toBe('RATE_LIMIT_EXCEEDED');
+    expect(rateLimitResponse.cause).toContain('Too many sign-in / registration attempts');
+    expect(rateLimitResponse.message).toContain('Please wait');
+    expect(typeof rateLimitResponse.retryAfter).toBe('number');
+    expect(rateLimitResponse.retryAfter).toBeGreaterThan(0);
+  });
 });

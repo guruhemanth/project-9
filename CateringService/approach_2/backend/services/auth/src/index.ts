@@ -221,8 +221,27 @@ export function buildAuthServer() {
         return reply.status(404).send({ error: 'User not found' });
       }
       return reply.send({ user });
-    } catch {
-      return reply.status(401).send({ error: 'Unauthorized token' });
+    } catch (err: any) {
+      const isExpired =
+        err?.code === 'FAST_JWT_EXPIRED' ||
+        err?.name === 'TokenExpiredError' ||
+        (err?.message && err.message.toLowerCase().includes('expired'));
+
+      if (isExpired) {
+        return reply.status(401).send({
+          statusCode: 401,
+          error: 'Unauthorized',
+          code: 'SESSION_EXPIRED',
+          message: 'Your session has expired. Please sign in again.',
+        });
+      }
+
+      return reply.status(401).send({
+        statusCode: 401,
+        error: 'Unauthorized',
+        code: 'UNAUTHORIZED',
+        message: 'Invalid or missing authentication token.',
+      });
     }
   });
 

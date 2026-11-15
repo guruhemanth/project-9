@@ -6,6 +6,9 @@ export interface StandardErrorResponse {
   message: string;
   requestId: string;
   timestamp: string;
+  code?: string;
+  cause?: string;
+  retryAfter?: number;
   details?: unknown;
 }
 
@@ -60,6 +63,8 @@ export function registerCentralizedErrorHandler(server: FastifyInstance, service
       }
     } else if (statusCode === 400 && error.validation) {
       errorName = 'ValidationError';
+    } else if (statusCode === 429) {
+      errorName = 'Too Many Requests';
     }
 
     const payload: StandardErrorResponse = {
@@ -69,6 +74,13 @@ export function registerCentralizedErrorHandler(server: FastifyInstance, service
       requestId,
       timestamp: new Date().toISOString(),
       ...(error.validation ? { details: error.validation } : {}),
+      ...((error as any).code ? { code: String((error as any).code) } : {}),
+      ...((error as any).cause && typeof (error as any).cause === 'string'
+        ? { cause: (error as any).cause }
+        : {}),
+      ...((error as any).retryAfter && typeof (error as any).retryAfter === 'number'
+        ? { retryAfter: (error as any).retryAfter }
+        : {}),
     };
 
     return reply.status(statusCode).send(payload);
