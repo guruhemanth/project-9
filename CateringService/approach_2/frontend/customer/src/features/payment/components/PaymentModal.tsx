@@ -10,7 +10,6 @@ import {
   Calendar,
   Users,
   Receipt,
-  Zap,
   Info,
 } from 'lucide-react';
 import { formatPaiseToINR, formatIndianDate } from '@/lib/formatters';
@@ -61,46 +60,6 @@ export const PaymentModal: React.FC<Props> = ({ booking, onClose, onPaymentSucce
 
   const feastTitle =
     booking.custom_combo_name || booking.package_name || 'Catering Feast Package';
-
-  const handleFastTestPay = async () => {
-    setError(null);
-    setProcessing(true);
-    setStatusMessage('Simulating instant test payment & escrow settlement...');
-    try {
-      const order = await createPaymentOrder(booking.id, paymentOption, advancePercentage);
-      if (!order?.orderId) {
-        throw new Error('Failed to generate payment order');
-      }
-
-      setStatusMessage('Bypassing gateway: validating test approval...');
-      const verifyRes = await verifyPaymentSignature({
-        bookingId: booking.id,
-        razorpayOrderId: order.orderId,
-        razorpayPaymentId: `pay_test_${Date.now()}`,
-        razorpaySignature: 'test_mode_instant_approval',
-      });
-
-      if (verifyRes.success) {
-        setStatusMessage('Payment verified! Deal confirmed & locked.');
-        setTimeout(() => {
-          onPaymentSuccess(
-            verifyRes.booking ||
-              ({
-                ...booking,
-                status: 'paid',
-                payment_type: paymentOption,
-              } as any)
-          );
-        }, 600);
-      } else {
-        throw new Error(verifyRes.message || 'Signature verification failed');
-      }
-    } catch (err: any) {
-      setError(err?.message || 'Fast test payment simulation failed');
-      setProcessing(false);
-      setStatusMessage(null);
-    }
-  };
 
   const handlePay = async () => {
     setError(null);
@@ -410,43 +369,30 @@ export const PaymentModal: React.FC<Props> = ({ booking, onClose, onPaymentSucce
         )}
 
         {/* Actions */}
-        <div className="mt-5 flex flex-wrap items-center justify-between gap-2 border-t border-slate-100 pt-3">
+        <div className="mt-5 flex items-center justify-end gap-2 border-t border-slate-100 pt-3">
           <button
             type="button"
-            onClick={handleFastTestPay}
+            onClick={onClose}
             disabled={processing}
-            className="flex items-center gap-1.5 rounded-lg border border-amber-300 bg-amber-50 px-3.5 py-2 text-xs font-semibold text-amber-900 shadow-2xs hover:bg-amber-100 disabled:opacity-50 transition"
-            title="Instant simulated payment approval without external QR scan"
+            className="rounded-lg border border-slate-200 px-4 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-40 transition"
           >
-            <Zap className="h-3.5 w-3.5 text-amber-600 fill-amber-500" />
-            <span>⚡ 1-Click Test Pass</span>
+            Cancel
           </button>
-
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={onClose}
-              disabled={processing}
-              className="rounded-lg border border-slate-200 px-4 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-40 transition"
-            >
-              Cancel
-            </button>
-            <button
-              type="button"
-              onClick={handlePay}
-              disabled={processing}
-              className="flex items-center gap-2 rounded-lg bg-emerald-600 px-5 py-2.5 text-xs font-semibold text-white shadow-sm hover:bg-emerald-700 disabled:opacity-50 transition"
-            >
-              <CreditCard className="h-4 w-4" />
-              <span>
-                {processing
-                  ? 'Processing...'
-                  : `Pay ${formatPaiseToINR(amountToCharge)} ${
-                      paymentOption === 'advance' ? '(Lock Date)' : '(Full)'
-                    }`}
-              </span>
-            </button>
-          </div>
+          <button
+            type="button"
+            onClick={handlePay}
+            disabled={processing}
+            className="flex items-center gap-2 rounded-lg bg-emerald-600 px-5 py-2.5 text-xs font-semibold text-white shadow-sm hover:bg-emerald-700 disabled:opacity-50 transition"
+          >
+            <CreditCard className="h-4 w-4" />
+            <span>
+              {processing
+                ? 'Processing...'
+                : `Pay ${formatPaiseToINR(amountToCharge)} ${
+                    paymentOption === 'advance' ? '(Lock Date)' : '(Full)'
+                  }`}
+            </span>
+          </button>
         </div>
       </div>
     </div>

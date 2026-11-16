@@ -445,7 +445,7 @@ export function buildChatServer() {
   return server;
 }
 
-if (process.env.NODE_ENV !== 'test') {
+if (process.env.NODE_ENV !== 'test' && !process.env.VITEST) {
   const app = buildChatServer();
   const PORT = parseInt(process.env.CHAT_PORT || (process.env.PORT && process.env.PORT !== '8080' ? process.env.PORT : '4006'), 10);
   app.listen({ port: PORT, host: '0.0.0.0' }, (err, address) => {

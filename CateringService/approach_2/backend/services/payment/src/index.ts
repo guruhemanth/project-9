@@ -20,6 +20,7 @@ import {
   registerCentralizedErrorHandler,
   loggerRedactionConfig,
   getAuthenticatedUser,
+  verifyInternalToken,
 } from '@caterconnect/shared';
 import { enqueueOutboxNotification } from './outbox';
 
@@ -60,6 +61,7 @@ export function buildPaymentServer() {
   const razorpayKeyId = env.RAZORPAY_KEY_ID;
   const razorpayKeySecret = env.RAZORPAY_KEY_SECRET;
   const webhookSecret = env.RAZORPAY_WEBHOOK_SECRET;
+  const jwtSecret = process.env.JWT_SECRET || 'dev_secret_jwt_caterconnect_secure';
 
   let razorpayInstance: Razorpay | null = null;
   try {
@@ -188,7 +190,7 @@ export function buildPaymentServer() {
         }
       } else {
         // Development or test environment mock fallback
-        if (razorpayInstance && !razorpayKeyId.startsWith('test_rzp')) {
+        if (razorpayInstance && !razorpayKeyId.startsWith('test_rzp') && !process.env.VITEST && env.NODE_ENV !== 'test') {
           try {
             const rzpOrder = await razorpayInstance.orders.create({
               amount: orderAmountPaise,
@@ -261,10 +263,18 @@ export function buildPaymentServer() {
 
     const payRow = pRes.rows[0];
 
-    // 2. Amount verification: paid amount must match expected order amount
+    // 2. Amount and Currency verification: paid amount & currency must match expected order
     if (typeof amountPaise === 'number' && payRow.amount_paise !== amountPaise) {
       return {
         error: `Payment amount mismatch: expected ${payRow.amount_paise}, received ${amountPaise}`,
+        statusCode: 400,
+      };
+    }
+
+    const receivedCurrency = rawPayload?.payload?.payment?.entity?.currency;
+    if (receivedCurrency && receivedCurrency !== 'INR') {
+      return {
+        error: `Payment currency mismatch: expected INR, received ${receivedCurrency}`,
         statusCode: 400,
       };
     }
@@ -402,7 +412,6 @@ export function buildPaymentServer() {
       }
 
       // Verify HMAC-SHA256 signature
-      let isSignatureValid = false;
       const expectedSignature = crypto
         .createHmac('sha256', razorpayKeySecret)
         .update(`${razorpayOrderId}|${razorpayPaymentId}`)
@@ -411,22 +420,13 @@ export function buildPaymentServer() {
       const sigBuf = Buffer.from(razorpaySignature, 'utf8');
       const expectedBuf = Buffer.from(expectedSignature, 'utf8');
 
-      if (sigBuf.length === expectedBuf.length && crypto.timingSafeEqual(sigBuf, expectedBuf)) {
-        isSignatureValid = true;
-      } else if (
-        (env.NODE_ENV !== 'production' || razorpayKeyId.startsWith('rzp_test_')) &&
-        razorpaySignature === 'test_mode_instant_approval'
-      ) {
-        isSignatureValid = true;
-      }
-
-      if (!isSignatureValid) {
+      if (sigBuf.length !== expectedBuf.length || !crypto.timingSafeEqual(sigBuf, expectedBuf)) {
         return reply.status(400).send({ error: 'Invalid Razorpay payment signature' });
       }
 
       // Verify booking ownership
       const bRes = await pgPool.query(
-        'SELECT id, customer_id, total_amount_paise FROM order_svc.bookings WHERE id = $1',
+        'SELECT id, customer_id, total_amount_paise, status FROM order_svc.bookings WHERE id = $1',
         [bookingId]
       );
       if (bRes.rows.length === 0) {
@@ -436,45 +436,22 @@ export function buildPaymentServer() {
         return reply.status(403).send({ error: 'Forbidden: You do not own this booking' });
       }
 
-      // Process payment under transaction
-      const client = await pgPool.connect();
-      try {
-        await client.query('BEGIN');
-        const pCheck = await client.query(
-          'SELECT amount_paise FROM pay_svc.payments WHERE razorpay_order_id = $1',
-          [razorpayOrderId]
-        );
-        const amountPaise = pCheck.rows[0]?.amount_paise;
+      // Record client signature verification on payment record without transitioning booking status to paid (P0-6)
+      await pgPool.query(
+        `UPDATE pay_svc.payments
+         SET razorpay_payment_id = COALESCE(razorpay_payment_id, $1),
+             raw_payload = jsonb_set(COALESCE(raw_payload, '{}'::jsonb), '{signature_verified}', 'true'::jsonb),
+             updated_at = NOW()
+         WHERE razorpay_order_id = $2`,
+        [razorpayPaymentId, razorpayOrderId]
+      );
 
-        const result = await processSuccessfulPayment(client, razorpayOrderId, razorpayPaymentId, amountPaise, {
-          signatureVerified: true,
-          verifiedVia: 'client_checkout_signature',
-        });
-
-        if (result.error) {
-          await client.query('ROLLBACK');
-          return reply.status(result.statusCode || 400).send({ error: result.error });
-        }
-
-        await client.query('COMMIT');
-
-        // Fetch updated booking
-        const updatedBooking = await pgPool.query(
-          'SELECT * FROM order_svc.bookings WHERE id = $1',
-          [bookingId]
-        );
-
-        return reply.send({
-          success: true,
-          message: 'Payment signature verified and booking confirmed',
-          booking: updatedBooking.rows[0],
-        });
-      } catch (txErr) {
-        await client.query('ROLLBACK');
-        throw txErr;
-      } finally {
-        client.release();
-      }
+      return reply.send({
+        success: true,
+        verified: true,
+        message: 'Payment signature verified. Awaiting webhook confirmation to finalize booking.',
+        booking: bRes.rows[0],
+      });
     } catch (err: any) {
       req.log.error(err);
       return reply.status(500).send({ error: err?.message || 'Failed to verify payment signature' });
@@ -922,6 +899,17 @@ export function buildPaymentServer() {
   // Automated internal refund endpoint (called on booking cancellation / caterer rejection)
   server.post('/api/payments/internal/refund', async (req, reply) => {
     try {
+      const internalToken = (req.headers['x-internal-token'] as string) || (req.headers['authorization'] as string)?.replace('Bearer ', '');
+      const internalPayload = verifyInternalToken(internalToken, jwtSecret);
+      const authUser = getAuthenticatedUser(req);
+
+      const isInternalService = internalPayload && (internalPayload.role === 'admin' || internalPayload.userId === 'booking-order-service');
+      const isAdminUser = authUser && authUser.role === 'admin';
+
+      if (!isInternalService && !isAdminUser) {
+        return reply.status(403).send({ error: 'Forbidden: Internal service or admin access required' });
+      }
+
       const { bookingId, refundAmountPaise, reason } = req.body as {
         bookingId: string;
         refundAmountPaise: number;
@@ -946,7 +934,7 @@ export function buildPaymentServer() {
       const razorpayPaymentId = payment.razorpay_payment_id;
       let rzpRefundId = `rfnd_sim_${Date.now()}`;
 
-      if (razorpayInstance && razorpayPaymentId && !razorpayPaymentId.startsWith('pay_test_')) {
+      if (razorpayInstance && razorpayPaymentId && !razorpayPaymentId.startsWith('pay_test_') && !process.env.VITEST && env.NODE_ENV !== 'test') {
         try {
           const refundRes = await razorpayInstance.payments.refund(razorpayPaymentId, {
             amount: refundAmountPaise,
@@ -958,9 +946,9 @@ export function buildPaymentServer() {
         }
       }
 
-      // Mark settlement cancelled so admin doesn't disburse
+      // Mark settlement held so admin doesn't disburse
       await pgPool.query(
-        "UPDATE pay_svc.caterer_settlements SET status = 'cancelled', updated_at = NOW() WHERE booking_id = $1",
+        "UPDATE pay_svc.caterer_settlements SET status = 'held', updated_at = NOW() WHERE booking_id = $1",
         [bookingId]
       );
 
@@ -986,7 +974,7 @@ export function buildPaymentServer() {
   return server;
 }
 
-if (process.env.NODE_ENV !== 'test') {
+if (process.env.NODE_ENV !== 'test' && !process.env.VITEST) {
   const app = buildPaymentServer();
   const PORT = parseInt(
     process.env.PAYMENT_PORT || (process.env.PORT && process.env.PORT !== '8080' ? process.env.PORT : '4004'),

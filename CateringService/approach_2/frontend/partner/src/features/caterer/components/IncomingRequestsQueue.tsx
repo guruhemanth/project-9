@@ -16,6 +16,7 @@ import {
   Zap,
   Timer,
   AlertTriangle,
+  Lock,
 } from 'lucide-react';
 import { formatPaiseToINR, formatIndianDate } from '@/lib/formatters';
 import { PartnerChatDrawer } from '@/features/chat/PartnerChatDrawer';
@@ -288,21 +289,30 @@ export const IncomingRequestsQueue: React.FC<Props> = ({
                         <User className="h-3.5 w-3.5 text-slate-500" />
                         {req.customer_name || 'Client'}
                       </span>
-                      {req.customer_phone && (
-                        <span className="flex items-center gap-1 text-slate-600">
-                          <Phone className="h-3 w-3 text-slate-400" />
-                          <a
-                            href={`tel:${req.customer_phone}`}
-                            className="hover:underline font-semibold text-emerald-700"
-                          >
-                            {req.customer_phone}
-                          </a>
+                      {(req as any).contact_locked ? (
+                        <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-amber-50 text-amber-800 text-[11px] font-medium border border-amber-200">
+                          <Lock className="h-3 w-3 text-amber-600" />
+                          Contact unlocked upon deposit payment
                         </span>
-                      )}
-                      {req.customer_email && (
-                        <span className="text-slate-400 text-[11px] truncate">
-                          ({req.customer_email})
-                        </span>
+                      ) : (
+                        <>
+                          {req.customer_phone && (
+                            <span className="flex items-center gap-1 text-slate-600">
+                              <Phone className="h-3 w-3 text-slate-400" />
+                              <a
+                                href={`tel:${req.customer_phone}`}
+                                className="hover:underline font-semibold text-emerald-700"
+                              >
+                                {req.customer_phone}
+                              </a>
+                            </span>
+                          )}
+                          {req.customer_email && (
+                            <span className="text-slate-400 text-[11px] truncate">
+                              ({req.customer_email})
+                            </span>
+                          )}
+                        </>
                       )}
                     </div>
 

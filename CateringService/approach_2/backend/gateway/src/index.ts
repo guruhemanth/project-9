@@ -249,6 +249,15 @@ export function buildGatewayServer() {
       if (path === '/api/payments/webhook' && req.method === 'POST') {
         return;
       }
+      if (path.startsWith('/api/payments/internal')) {
+        await requireAuth(req, reply);
+        if (reply.sent) return;
+        const user = req.user as { sub: string; role: any; email?: string } | undefined;
+        if (!user || user.role !== 'admin') {
+          return reply.status(403).send({ error: 'Forbidden: Admin access required for internal payment operations' });
+        }
+        return;
+      }
       return requireAuth(req, reply);
     },
   });

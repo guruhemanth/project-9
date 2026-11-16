@@ -69,7 +69,7 @@ export function buildNotificationServer() {
   const outboxWorker = new OutboxWorker(dispatcher);
 
   // In non-test environments, run background outbox worker
-  if (process.env.NODE_ENV !== 'test') {
+  if (process.env.NODE_ENV !== 'test' && !process.env.VITEST) {
     outboxWorker.start(3000);
   }
 
@@ -253,7 +253,7 @@ export function buildNotificationServer() {
   return server;
 }
 
-if (process.env.NODE_ENV !== 'test') {
+if (process.env.NODE_ENV !== 'test' && !process.env.VITEST) {
   const app = buildNotificationServer();
   const PORT = parseInt(process.env.PORT || '4005', 10);
   app.listen({ port: PORT, host: '0.0.0.0' }, (err, address) => {

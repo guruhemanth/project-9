@@ -294,7 +294,7 @@ export function buildAuthServer() {
   return server;
 }
 
-if (process.env.NODE_ENV !== 'test') {
+if (process.env.NODE_ENV !== 'test' && !process.env.VITEST) {
   const server = buildAuthServer();
   const PORT = Number(process.env.PORT) || 4001;
   server.listen({ port: PORT, host: '0.0.0.0' }, (err, address) => {

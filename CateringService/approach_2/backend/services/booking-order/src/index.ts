@@ -13,11 +13,13 @@ import {
   registerCentralizedErrorHandler,
   loggerRedactionConfig,
   getAuthenticatedUser,
+  signInternalToken,
 } from '@caterconnect/shared';
 import { enqueueOutboxNotification } from './outbox';
 
 export function buildBookingServer() {
   const env = validateEnv(createDbEnvSchema(), process.env);
+  const jwtSecret = process.env.JWT_SECRET || 'dev_secret_jwt_caterconnect_secure';
   const server = Fastify({
     logger: {
       redact: loggerRedactionConfig,
@@ -158,6 +160,56 @@ export function buildBookingServer() {
       const { catererId, packageId, customComboName, customizedItems, eventDate, eventTime, guestCount, venueAddress, city, state, pincode, specialRequests } =
         parseResult.data;
 
+      // Verify caterer existence, approval status, service area, and rules
+      const catRuleRes = await pgPool.query(
+        'SELECT status, min_guests, max_guests, business_name, lead_time_days, city, service_areas, instant_booking_enabled FROM caterer_svc.caterers WHERE id = $1',
+        [catererId]
+      );
+
+      if (catRuleRes.rows.length === 0) {
+        return reply.status(404).send({ error: 'Caterer not found' });
+      }
+
+      const caterer = catRuleRes.rows[0];
+
+      // P0-18: Verify caterer status is 'approved'
+      if (caterer.status !== 'approved') {
+        return reply.status(400).send({
+          error: 'This caterer is not approved for booking requests.',
+        });
+      }
+
+      // P0-20: Validate event date is not in the past (using IST / Asia/Kolkata)
+      const todayKolkata = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+      if (eventDate < todayKolkata) {
+        return reply.status(400).send({ error: 'Event date cannot be in the past' });
+      }
+
+      // P0-20: Validate minimum lead time
+      const eventD = new Date(eventDate + 'T00:00:00Z');
+      const todayD = new Date(todayKolkata + 'T00:00:00Z');
+      const diffDays = Math.round((eventD.getTime() - todayD.getTime()) / (1000 * 60 * 60 * 24));
+      const requiredLeadDays = caterer.lead_time_days ?? 2;
+      if (diffDays < requiredLeadDays) {
+        return reply.status(400).send({
+          error: `Booking requires a minimum lead time of ${requiredLeadDays} days.`,
+        });
+      }
+
+      // P0-20: Validate caterer service area / city
+      const requestedCity = (city || '').trim().toLowerCase();
+      const catererCity = (caterer.city || '').trim().toLowerCase();
+      const serviceAreas = (caterer.service_areas || []).map((a: string) => a.trim().toLowerCase());
+      const servesCity =
+        requestedCity === catererCity ||
+        serviceAreas.includes(requestedCity) ||
+        serviceAreas.some((a: string) => venueAddress.toLowerCase().includes(a));
+      if (!servesCity) {
+        return reply.status(400).send({
+          error: `Caterer does not serve ${city}. Supported city is ${caterer.city}.`,
+        });
+      }
+
       // Check caterer availability for eventDate
       const availRes = await pgPool.query(
         'SELECT reason, auto_locked FROM caterer_svc.caterer_availability WHERE caterer_id = $1 AND unavailable_date = $2 LIMIT 1',
@@ -172,23 +224,15 @@ export function buildBookingServer() {
       }
 
       // Verify caterer minimum and maximum guest rules
-      const catRuleRes = await pgPool.query(
-        'SELECT min_guests, max_guests, business_name FROM caterer_svc.caterers WHERE id = $1',
-        [catererId]
-      );
-
-      if (catRuleRes.rows.length > 0) {
-        const { min_guests, max_guests, business_name } = catRuleRes.rows[0];
-        if (min_guests && guestCount < min_guests) {
-          return reply.status(400).send({
-            error: `Booking requires a minimum of ${min_guests} guests for ${business_name || 'this caterer'}.`,
-          });
-        }
-        if (max_guests && guestCount > max_guests) {
-          return reply.status(400).send({
-            error: `Booking exceeds maximum limit of ${max_guests} guests for ${business_name || 'this caterer'}.`,
-          });
-        }
+      if (caterer.min_guests && guestCount < caterer.min_guests) {
+        return reply.status(400).send({
+          error: `Booking requires a minimum of ${caterer.min_guests} guests for ${caterer.business_name || 'this caterer'}.`,
+        });
+      }
+      if (caterer.max_guests && guestCount > caterer.max_guests) {
+        return reply.status(400).send({
+          error: `Booking exceeds maximum limit of ${caterer.max_guests} guests for ${caterer.business_name || 'this caterer'}.`,
+        });
       }
 
       let totalAmountPaise = 0;
@@ -236,12 +280,7 @@ export function buildBookingServer() {
         return reply.status(400).send({ error: 'Either packageId or customizedItems must be provided.' });
       }
 
-      // Check whether this caterer has Instant Booking enabled
-      const catererModeRes = await pgPool.query(
-        'SELECT instant_booking_enabled FROM caterer_svc.caterers WHERE id = $1',
-        [catererId]
-      );
-      const isInstant = catererModeRes.rows[0]?.instant_booking_enabled === true;
+      const isInstant = caterer.instant_booking_enabled === true;
       const bookingMode = isInstant ? 'instant' : 'on_request';
 
       const insertRes = await pgPool.query(
@@ -355,7 +394,23 @@ export function buildBookingServer() {
       [catererId]
     );
 
-    return reply.send({ bookings: res.rows });
+    const rows = res.rows.map((row) => {
+      const isPaid = row.status === 'paid' || row.status === 'completed';
+      if (!isPaid && authUser.role !== 'admin') {
+        return {
+          ...row,
+          customer_phone: row.customer_phone ? row.customer_phone.replace(/\d(?=\d{2})/g, '•') : null,
+          customer_email: row.customer_email ? '•••••@' + (row.customer_email.split('@')[1] || 'domain.com') : null,
+          contact_locked: true,
+        };
+      }
+      return {
+        ...row,
+        contact_locked: false,
+      };
+    });
+
+    return reply.send({ bookings: rows });
   });
 
   // Get single booking by ID (Must be customer, caterer owner, or admin)
@@ -385,6 +440,17 @@ export function buildBookingServer() {
     const b = res.rows[0];
     if (authUser.role !== 'admin' && b.customer_id !== authUser.userId && b.caterer_owner_id !== authUser.userId) {
       return reply.status(403).send({ error: 'Forbidden: You are not a party to this booking' });
+    }
+
+    // P1-13: Hide customer contact details from caterer until deposit is paid
+    const isPaid = b.status === 'paid' || b.status === 'completed';
+    const isCatererParty = authUser.role !== 'admin' && b.customer_id !== authUser.userId;
+    if (isCatererParty && !isPaid) {
+      b.customer_phone = b.customer_phone ? b.customer_phone.replace(/\d(?=\d{2})/g, '•') : null;
+      b.customer_email = b.customer_email ? '•••••@' + (b.customer_email.split('@')[1] || 'domain.com') : null;
+      b.contact_locked = true;
+    } else {
+      b.contact_locked = false;
     }
 
     return reply.send({ booking: b });
@@ -578,9 +644,16 @@ export function buildBookingServer() {
       if (refundPaise > 0) {
         const paymentSvcUrl = process.env.PAYMENT_SERVICE_URL || 'http://localhost:4004';
         try {
+          const internalToken = signInternalToken(
+            { userId: 'booking-order-service', role: 'admin' },
+            jwtSecret
+          );
           await fetch(`${paymentSvcUrl}/api/payments/internal/refund`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: {
+              'Content-Type': 'application/json',
+              'x-internal-token': internalToken,
+            },
             body: JSON.stringify({
               bookingId: id,
               refundAmountPaise: refundPaise,
@@ -809,7 +882,7 @@ export function buildBookingServer() {
   return server;
 }
 
-if (process.env.NODE_ENV !== 'test') {
+if (process.env.NODE_ENV !== 'test' && !process.env.VITEST) {
   const app = buildBookingServer();
   const PORT = parseInt(process.env.BOOKING_PORT || (process.env.PORT && process.env.PORT !== '8080' ? process.env.PORT : '4003'), 10);
   app.listen({ port: PORT, host: '0.0.0.0' }, (err, address) => {

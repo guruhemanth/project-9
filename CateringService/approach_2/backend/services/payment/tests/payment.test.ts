@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import crypto from 'crypto';
+import { signInternalToken } from '@caterconnect/shared';
 import { buildPaymentServer } from '../src';
 import { pgPool } from '../src/db';
 
@@ -237,13 +238,15 @@ describe('Payment Service Integration (Dual Options & Webhook)', () => {
     expect(sBody.settlements[0].catererBusinessName).toBeDefined();
   });
 
-  it('verifies client razorpay signature, marks booking paid, and records 25% advance settlement (15% platform / 10% caterer)', async () => {
+  it('verifies client razorpay signature without marking paid (P0-6), then webhook marks booking paid and records 25% advance settlement', async () => {
     const advanceBookingId = 'f0000000-0000-0000-0000-' + Date.now().toString().slice(-12);
     const testCustomerId = 'c0000000-0000-0000-0000-000000000001';
     const testCatererId = 'd0000000-0000-0000-0000-000000000001';
     const testOrderId = `order_test_${Date.now()}`;
     const testPaymentId = `pay_test_${Date.now()}`;
     const razorpaySecret = process.env.RAZORPAY_KEY_SECRET || 'test_rzp_key_secret_vitest';
+    const webhookSecret = process.env.RAZORPAY_WEBHOOK_SECRET || 'test_webhook_secret_vitest_hmac';
+    const jwtSecret = process.env.JWT_SECRET || 'dev_secret_jwt_caterconnect_secure';
 
     // Insert accepted booking with 100,000 paise (₹1,000)
     await pgPool.query(
@@ -285,7 +288,7 @@ describe('Payment Service Integration (Dual Options & Webhook)', () => {
     expect(badRes.statusCode).toBe(400);
     expect(badRes.json().error).toContain('Invalid Razorpay payment signature');
 
-    // 2. Test valid signature verification
+    // 2. Test valid signature verification - P0-6: Browser callback must NEVER transition status to paid
     const goodRes = await app.inject({
       method: 'POST',
       url: '/api/payments/verify-signature',
@@ -302,8 +305,49 @@ describe('Payment Service Integration (Dual Options & Webhook)', () => {
     });
     expect(goodRes.statusCode).toBe(200);
     expect(goodRes.json().success).toBe(true);
+    expect(goodRes.json().verified).toBe(true);
 
-    // 3. Verify booking database state: paid, paid_amount = 25000, balance_due = 75000
+    // Verify booking database state remains 'accepted' (NOT 'paid' yet)
+    const pendingCheck = await pgPool.query(
+      'SELECT status FROM order_svc.bookings WHERE id = $1',
+      [advanceBookingId]
+    );
+    expect(pendingCheck.rows[0].status).toBe('accepted');
+
+    // 3. Send verified Razorpay webhook event (order.paid)
+    const webhookPayload = JSON.stringify({
+      entity: 'event',
+      event: 'payment.captured',
+      payload: {
+        payment: {
+          entity: {
+            id: testPaymentId,
+            order_id: testOrderId,
+            amount: 25000,
+            currency: 'INR',
+            status: 'captured',
+          },
+        },
+      },
+    });
+
+    const webhookSignature = crypto
+      .createHmac('sha256', webhookSecret)
+      .update(webhookPayload)
+      .digest('hex');
+
+    const hookRes = await app.inject({
+      method: 'POST',
+      url: '/api/payments/webhook',
+      headers: {
+        'content-type': 'application/json',
+        'x-razorpay-signature': webhookSignature,
+      },
+      payload: webhookPayload,
+    });
+    expect(hookRes.statusCode).toBe(200);
+
+    // 4. Verify booking database state after webhook: paid, paid_amount = 25000, balance_due = 75000
     const bCheck = await pgPool.query(
       'SELECT status, amount_paid_paise, balance_due_paise FROM order_svc.bookings WHERE id = $1',
       [advanceBookingId]
@@ -312,7 +356,7 @@ describe('Payment Service Integration (Dual Options & Webhook)', () => {
     expect(bCheck.rows[0].amount_paid_paise).toBe(25000);
     expect(bCheck.rows[0].balance_due_paise).toBe(75000);
 
-    // 4. Verify settlement breakdown:
+    // 5. Verify settlement breakdown:
     // Total order: 100,000 paise
     // Gross collected online: 25,000 paise (25%)
     // Platform commission: 15,000 paise (15% of total order)
@@ -325,5 +369,61 @@ describe('Payment Service Integration (Dual Options & Webhook)', () => {
     expect(sCheck.rows[0].gross_amount_paise).toBe(25000);
     expect(sCheck.rows[0].commission_amount_paise).toBe(15000);
     expect(sCheck.rows[0].net_payout_paise).toBe(10000);
+
+    // 6. Test P0-10: /api/payments/internal/refund access control
+    // Unauthenticated caller is rejected with 403
+    const unauthRefund = await app.inject({
+      method: 'POST',
+      url: '/api/payments/internal/refund',
+      payload: {
+        bookingId: advanceBookingId,
+        refundAmountPaise: 25000,
+        reason: 'Unauthorized refund test',
+      },
+    });
+    expect(unauthRefund.statusCode).toBe(403);
+
+    // Customer role is rejected with 403
+    const custRefund = await app.inject({
+      method: 'POST',
+      url: '/api/payments/internal/refund',
+      headers: {
+        'x-user-id': testCustomerId,
+        'x-user-role': 'customer',
+      },
+      payload: {
+        bookingId: advanceBookingId,
+        refundAmountPaise: 25000,
+        reason: 'Customer trying refund',
+      },
+    });
+    expect(custRefund.statusCode).toBe(403);
+
+    // Internal service with signed token succeeds
+    const internalToken = signInternalToken(
+      { userId: 'booking-order-service', role: 'admin' },
+      jwtSecret
+    );
+    const authRefund = await app.inject({
+      method: 'POST',
+      url: '/api/payments/internal/refund',
+      headers: {
+        'x-internal-token': internalToken,
+      },
+      payload: {
+        bookingId: advanceBookingId,
+        refundAmountPaise: 25000,
+        reason: 'Cancellation refund',
+      },
+    });
+    expect(authRefund.statusCode).toBe(200);
+    expect(authRefund.json().success).toBe(true);
+
+    const refundCheck = await pgPool.query(
+      'SELECT refund_id, refund_amount_paise FROM order_svc.bookings WHERE id = $1',
+      [advanceBookingId]
+    );
+    expect(refundCheck.rows[0].refund_id).toBeTruthy();
+    expect(refundCheck.rows[0].refund_amount_paise).toBe(25000);
   });
 });
