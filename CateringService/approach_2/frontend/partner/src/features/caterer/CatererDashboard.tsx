@@ -379,6 +379,8 @@ export const CatererDashboard: React.FC = () => {
           initialMaxGuests={caterer.max_guests}
           initialLeadDays={caterer.lead_time_days}
           initialAllowsCustomCombo={caterer.allows_custom_combo}
+          initialInstantBookingEnabled={caterer.instant_booking_enabled}
+          onUpdate={loadCatererProfile}
         />
       )}
 

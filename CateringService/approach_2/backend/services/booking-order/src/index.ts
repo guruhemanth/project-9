@@ -29,7 +29,47 @@ export function buildBookingServer() {
 
   registerCentralizedErrorHandler(server, 'booking-order-service');
 
+  // Helper: Periodically expire accepted bookings where 12-hour payment window passed
+  async function checkAndExpireBookings(): Promise<void> {
+    try {
+      const expiredRes = await pgPool.query(
+        `UPDATE order_svc.bookings
+         SET status = 'expired', updated_at = NOW()
+         WHERE status = 'accepted' AND payment_deadline IS NOT NULL AND payment_deadline < NOW()
+         RETURNING id, caterer_id, event_date, customer_id`
+      );
+
+      for (const row of expiredRes.rows) {
+        await pgPool.query(
+          `DELETE FROM caterer_svc.caterer_availability WHERE booking_id = $1 AND auto_locked = TRUE`,
+          [row.id]
+        );
+        await pgPool.query(
+          `INSERT INTO order_svc.booking_status_history (booking_id, from_status, to_status, note)
+           VALUES ($1, 'accepted', 'expired', '12-hour customer payment window elapsed without 25% advance payment')`,
+          [row.id]
+        );
+        await enqueueOutboxNotification('booking_cancelled', {
+          bookingId: row.id,
+          customerId: row.customer_id,
+          cancelledBy: 'system',
+          eventDate: row.event_date,
+          refundINR: '₹0',
+          reason: '12-hour payment window expired',
+        });
+      }
+    } catch (err: any) {
+      server.log.warn({ err }, 'Error checking expired bookings');
+    }
+  }
+
+  const expiryTimer = setInterval(() => {
+    checkAndExpireBookings();
+  }, 60000);
+  expiryTimer.unref();
+
   server.addHook('onClose', async () => {
+    clearInterval(expiryTimer);
     if (!(pgPool as any).ending) {
       await pgPool.end();
     }
@@ -172,10 +212,18 @@ export function buildBookingServer() {
         return reply.status(400).send({ error: 'Either packageId or customizedItems must be provided.' });
       }
 
+      // Check whether this caterer has Instant Booking enabled
+      const catererModeRes = await pgPool.query(
+        'SELECT instant_booking_enabled FROM caterer_svc.caterers WHERE id = $1',
+        [catererId]
+      );
+      const isInstant = catererModeRes.rows[0]?.instant_booking_enabled === true;
+      const bookingMode = isInstant ? 'instant' : 'on_request';
+
       const insertRes = await pgPool.query(
         `INSERT INTO order_svc.bookings 
-         (customer_id, caterer_id, package_id, event_date, event_time, guest_count, venue_address, city, state, pincode, special_requests, total_amount_paise, customized_items, custom_combo_name, status)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, 'requested')
+         (customer_id, caterer_id, package_id, event_date, event_time, guest_count, venue_address, city, state, pincode, special_requests, total_amount_paise, customized_items, custom_combo_name, status, booking_mode)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, 'requested', $15)
          RETURNING *`,
         [
           customerId,
@@ -192,6 +240,7 @@ export function buildBookingServer() {
           totalAmountPaise,
           JSON.stringify(effectiveCustomizedItems),
           customComboName || (packageId ? null : 'Custom Feast Combo'),
+          bookingMode,
         ]
       );
 
@@ -233,6 +282,7 @@ export function buildBookingServer() {
 
   // Get customer bookings
   server.get('/api/bookings/customer', async (req, reply) => {
+    await checkAndExpireBookings();
     const authUser = getAuthenticatedUser(req);
     if (!authUser) {
       return reply.status(401).send({ error: 'Unauthorized: Authentication required' });
@@ -255,6 +305,7 @@ export function buildBookingServer() {
 
   // Get caterer incoming bookings
   server.get('/api/bookings/caterer/:catererId', async (req, reply) => {
+    await checkAndExpireBookings();
     const { catererId } = req.params as { catererId: string };
     const authUser = getAuthenticatedUser(req);
     if (!authUser) {
@@ -285,6 +336,7 @@ export function buildBookingServer() {
 
   // Get single booking by ID (Must be customer, caterer owner, or admin)
   server.get('/api/bookings/:id', async (req, reply) => {
+    await checkAndExpireBookings();
     const { id } = req.params as { id: string };
     const authUser = getAuthenticatedUser(req);
     if (!authUser) {
@@ -356,6 +408,7 @@ export function buildBookingServer() {
              commission_pct = 15.00, 
              commission_amount_paise = $1,
              caterer_note = $2,
+             payment_deadline = NOW() + INTERVAL '12 hours',
              updated_at = NOW()
          WHERE id = $3 RETURNING *`,
         [commissionPaise, catererNote, id]
@@ -477,8 +530,13 @@ export function buildBookingServer() {
 
       let refundPaise = 0;
       if (currentStatus === 'paid' && row.amount_paid_paise > 0) {
-        const eventDateStr = new Date(row.event_date).toISOString().split('T')[0];
-        refundPaise = calculateCancellationRefund(row.amount_paid_paise, effectiveRole, eventDateStr);
+        if (effectiveRole === 'caterer') {
+          // If caterer cancels a paid booking, customer gets 100% full refund
+          refundPaise = row.amount_paid_paise;
+        } else {
+          const eventDateStr = new Date(row.event_date).toISOString().split('T')[0];
+          refundPaise = calculateCancellationRefund(row.amount_paid_paise, effectiveRole, eventDateStr);
+        }
       }
 
       const updateRes = await pgPool.query(
@@ -491,6 +549,24 @@ export function buildBookingServer() {
          WHERE id = $4 RETURNING *`,
         [effectiveRole, reason || 'User requested cancellation', refundPaise, id]
       );
+
+      // Trigger automated payment gateway refund if customer had already paid
+      if (refundPaise > 0) {
+        const paymentSvcUrl = process.env.PAYMENT_SERVICE_URL || 'http://localhost:4004';
+        try {
+          await fetch(`${paymentSvcUrl}/api/payments/internal/refund`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              bookingId: id,
+              refundAmountPaise: refundPaise,
+              reason: reason || `${effectiveRole} cancelled booking`,
+            }),
+          });
+        } catch (rfErr: any) {
+          req.log.warn({ rfErr }, 'Automated refund trigger failed');
+        }
+      }
 
       await pgPool.query(
         `INSERT INTO order_svc.booking_status_history (booking_id, from_status, to_status, changed_by, note)
@@ -576,6 +652,7 @@ export function buildBookingServer() {
   // Admin: Get all bookings across the platform - STRICT ADMIN GUARD
   server.get('/api/admin/bookings', async (req, reply) => {
     try {
+      await checkAndExpireBookings();
       const authUser = getAuthenticatedUser(req);
       if (!authUser || authUser.role !== 'admin') {
         return reply.status(403).send({ error: 'Forbidden: Admin access required' });

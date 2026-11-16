@@ -100,9 +100,9 @@ export function buildPaymentServer() {
 
       const { bookingId, paymentOption, advancePct } = parseResult.data;
 
-      // Query booking details and ownership
+      // Query booking details, mode, deadline, and ownership
       const bRes = await pgPool.query(
-        'SELECT id, customer_id, status, total_amount_paise FROM order_svc.bookings WHERE id = $1',
+        'SELECT id, customer_id, status, total_amount_paise, booking_mode, payment_deadline FROM order_svc.bookings WHERE id = $1',
         [bookingId]
       );
 
@@ -117,10 +117,30 @@ export function buildPaymentServer() {
         return reply.status(403).send({ error: 'Forbidden: You do not own this booking' });
       }
 
-      if (booking.status !== 'accepted' && booking.status !== 'requested') {
-        return reply.status(400).send({
-          error: `Cannot initiate payment for booking in '${booking.status}' status. Must be 'accepted' or 'requested'.`,
-        });
+      const bookingMode = booking.booking_mode || 'on_request';
+      if (bookingMode === 'on_request') {
+        if (booking.status === 'requested') {
+          return reply.status(400).send({
+            error: 'This booking is pending caterer review. You can pay the 25% advance once the caterer accepts your request.',
+          });
+        }
+        if (booking.status !== 'accepted') {
+          return reply.status(400).send({
+            error: `Cannot initiate payment for booking in '${booking.status}' status. Must be 'accepted'.`,
+          });
+        }
+        if (booking.payment_deadline && new Date() > new Date(booking.payment_deadline)) {
+          return reply.status(400).send({
+            error: 'The 12-hour payment window for this booking has expired. Please submit a new booking request.',
+          });
+        }
+      } else {
+        // Instant Booking mode
+        if (booking.status !== 'accepted' && booking.status !== 'requested') {
+          return reply.status(400).send({
+            error: `Cannot initiate payment for booking in '${booking.status}' status.`,
+          });
+        }
       }
 
       const totalPaise = booking.total_amount_paise;
@@ -896,6 +916,70 @@ export function buildPaymentServer() {
     } catch (err: any) {
       req.log.error(err);
       return reply.status(500).send({ error: 'Failed to disburse settlement' });
+    }
+  });
+
+  // Automated internal refund endpoint (called on booking cancellation / caterer rejection)
+  server.post('/api/payments/internal/refund', async (req, reply) => {
+    try {
+      const { bookingId, refundAmountPaise, reason } = req.body as {
+        bookingId: string;
+        refundAmountPaise: number;
+        reason?: string;
+      };
+
+      if (!bookingId || !refundAmountPaise) {
+        return reply.status(400).send({ error: 'bookingId and refundAmountPaise are required' });
+      }
+
+      // Find captured payment for this booking
+      const pRes = await pgPool.query(
+        "SELECT id, razorpay_payment_id, amount_paise FROM pay_svc.payments WHERE booking_id = $1 AND status = 'captured' ORDER BY created_at DESC LIMIT 1",
+        [bookingId]
+      );
+
+      if (pRes.rows.length === 0) {
+        return reply.status(404).send({ error: 'No captured payment found for this booking' });
+      }
+
+      const payment = pRes.rows[0];
+      const razorpayPaymentId = payment.razorpay_payment_id;
+      let rzpRefundId = `rfnd_sim_${Date.now()}`;
+
+      if (razorpayInstance && razorpayPaymentId && !razorpayPaymentId.startsWith('pay_test_')) {
+        try {
+          const refundRes = await razorpayInstance.payments.refund(razorpayPaymentId, {
+            amount: refundAmountPaise,
+            notes: { bookingId, reason: reason || 'Automated cancellation refund' },
+          });
+          rzpRefundId = refundRes.id;
+        } catch (rfErr: any) {
+          req.log.error({ rfErr }, 'Razorpay gateway refund error');
+        }
+      }
+
+      // Mark settlement cancelled so admin doesn't disburse
+      await pgPool.query(
+        "UPDATE pay_svc.caterer_settlements SET status = 'cancelled', updated_at = NOW() WHERE booking_id = $1",
+        [bookingId]
+      );
+
+      // Record refund in payments
+      await pgPool.query(
+        "UPDATE pay_svc.payments SET status = 'refunded' WHERE id = $1",
+        [payment.id]
+      );
+
+      // Record in booking
+      await pgPool.query(
+        "UPDATE order_svc.bookings SET refund_id = $1, refunded_at = NOW(), refund_amount_paise = $2 WHERE id = $3",
+        [rzpRefundId, refundAmountPaise, bookingId]
+      );
+
+      return reply.send({ success: true, refundId: rzpRefundId, amountPaise: refundAmountPaise });
+    } catch (err: any) {
+      req.log.error(err, 'Internal refund processing failed');
+      return reply.status(500).send({ error: 'Internal refund failed' });
     }
   });
 

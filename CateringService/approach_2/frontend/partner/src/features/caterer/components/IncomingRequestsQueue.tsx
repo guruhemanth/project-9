@@ -10,10 +10,12 @@ import {
   User,
   Phone,
   Utensils,
-  CreditCard,
   Users,
   Search,
   Sparkles,
+  Zap,
+  Timer,
+  AlertTriangle,
 } from 'lucide-react';
 import { formatPaiseToINR, formatIndianDate } from '@/lib/formatters';
 import { PartnerChatDrawer } from '@/features/chat/PartnerChatDrawer';
@@ -38,7 +40,7 @@ export const IncomingRequestsQueue: React.FC<Props> = ({
   const [chatBooking, setChatBooking] = useState<any | null>(null);
 
   const [filterTab, setFilterTab] = useState<
-    'all' | 'requested' | 'accepted' | 'paid' | 'completed' | 'cancelled'
+    'all' | 'requested' | 'accepted' | 'paid' | 'completed' | 'cancelled' | 'expired'
   >('all');
   const [searchQuery, setSearchQuery] = useState('');
 
@@ -54,6 +56,18 @@ export const IncomingRequestsQueue: React.FC<Props> = ({
     setNote('');
   };
 
+  const getRemainingTime = (deadlineStr?: string | null) => {
+    if (!deadlineStr) return null;
+    const deadline = new Date(deadlineStr).getTime();
+    const now = Date.now();
+    const diffMs = deadline - now;
+    if (diffMs <= 0) return 'Expired';
+    const hours = Math.floor(diffMs / (1000 * 60 * 60));
+    const minutes = Math.floor((diffMs % (1000 * 60 * 60)) / (1000 * 60));
+    if (hours > 0) return `${hours}h ${minutes}m remaining`;
+    return `${minutes}m remaining`;
+  };
+
   const pendingCount = requests.filter((r) => r.status === 'requested').length;
   const awaitingPaymentCount = requests.filter((r) => r.status === 'accepted').length;
   const paidCount = requests.filter((r) => r.status === 'paid').length;
@@ -61,6 +75,7 @@ export const IncomingRequestsQueue: React.FC<Props> = ({
   const cancelledCount = requests.filter(
     (r) => r.status === 'cancelled' || r.status === 'rejected'
   ).length;
+  const expiredCount = requests.filter((r) => r.status === 'expired').length;
 
   const filteredRequests = requests.filter((r) => {
     if (filterTab === 'requested' && r.status !== 'requested') return false;
@@ -68,6 +83,7 @@ export const IncomingRequestsQueue: React.FC<Props> = ({
     if (filterTab === 'paid' && r.status !== 'paid') return false;
     if (filterTab === 'completed' && r.status !== 'completed') return false;
     if (filterTab === 'cancelled' && r.status !== 'cancelled' && r.status !== 'rejected') return false;
+    if (filterTab === 'expired' && r.status !== 'expired') return false;
 
     if (!searchQuery.trim()) return true;
     const q = searchQuery.toLowerCase();
@@ -87,12 +103,15 @@ export const IncomingRequestsQueue: React.FC<Props> = ({
             <Clock className="h-3 w-3" /> Awaiting Your Acceptance
           </span>
         );
-      case 'accepted':
+      case 'accepted': {
+        const timeLeft = getRemainingTime(r.payment_deadline);
         return (
-          <span className="inline-flex items-center gap-1 rounded-full bg-yellow-100 px-2.5 py-0.5 text-xs font-semibold text-yellow-800 border border-yellow-200">
-            <CreditCard className="h-3 w-3" /> Awaiting Customer Payment
+          <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2.5 py-0.5 text-xs font-semibold text-amber-900 border border-amber-300">
+            <Timer className="h-3 w-3 text-amber-700 animate-pulse" />
+            <span>Awaiting Payment {timeLeft ? `(${timeLeft})` : '(12h window)'}</span>
           </span>
         );
+      }
       case 'paid':
         if (r.payment_type === 'advance') {
           return (
@@ -122,6 +141,12 @@ export const IncomingRequestsQueue: React.FC<Props> = ({
         return (
           <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2.5 py-0.5 text-xs font-semibold text-slate-700">
             Cancelled
+          </span>
+        );
+      case 'expired':
+        return (
+          <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2.5 py-0.5 text-xs font-semibold text-slate-600 border border-slate-200">
+            <Clock className="h-3 w-3 text-slate-400" /> Expired (Unpaid 12h)
           </span>
         );
       default:
@@ -166,6 +191,7 @@ export const IncomingRequestsQueue: React.FC<Props> = ({
           { id: 'paid', label: `Paid & Confirmed (${paidCount})` },
           { id: 'completed', label: `Completed (${completedCount})` },
           { id: 'cancelled', label: `Cancelled / Declined (${cancelledCount})` },
+          { id: 'expired', label: `Expired (${expiredCount})` },
         ].map((tab) => (
           <button
             key={tab.id}
@@ -224,6 +250,16 @@ export const IncomingRequestsQueue: React.FC<Props> = ({
                       Booking #{req.id.substring(0, 8)}
                     </span>
                     <span className="text-slate-300">•</span>
+                    {req.booking_mode === 'instant' ? (
+                      <span className="inline-flex items-center gap-1 rounded bg-amber-100 px-2 py-0.5 text-[10px] font-bold text-amber-900 border border-amber-300">
+                        <Zap className="h-3 w-3 fill-amber-500 text-amber-600" /> Instant Book
+                      </span>
+                    ) : (
+                      <span className="inline-flex items-center gap-1 rounded bg-slate-100 px-2 py-0.5 text-[10px] font-semibold text-slate-700 border border-slate-200">
+                        On-Request
+                      </span>
+                    )}
+                    <span className="text-slate-300">•</span>
                     <span className="text-xs font-semibold text-slate-700">
                       {req.package_name || req.custom_combo_name || 'Catering Feast'}
                     </span>
@@ -275,6 +311,39 @@ export const IncomingRequestsQueue: React.FC<Props> = ({
                         <span>{req.venue_address}</span>
                       </span>
                     </div>
+
+                    {/* Payment Window Countdown for Accepted Bookings */}
+                    {req.status === 'accepted' && req.payment_deadline && (
+                      <div className="rounded-xl border border-amber-300 bg-amber-50 p-3 flex items-start gap-2.5">
+                        <Timer className="h-4 w-4 text-amber-600 shrink-0 mt-0.5 animate-pulse" />
+                        <div className="text-xs">
+                          <span className="font-bold text-amber-900">
+                            12-Hour Payment Window Active:
+                          </span>{' '}
+                          <span className="text-amber-800">
+                            Customer must pay the 25% advance by {new Date(req.payment_deadline).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} ({getRemainingTime(req.payment_deadline)}). If unpaid, the slot will auto-expire and release.
+                          </span>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Expired Slot Notice */}
+                    {req.status === 'expired' && (
+                      <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 flex items-start gap-2.5">
+                        <AlertTriangle className="h-4 w-4 text-slate-500 shrink-0 mt-0.5" />
+                        <div className="text-xs text-slate-600">
+                          <span className="font-semibold text-slate-800">Booking Expired:</span> Customer did not complete payment within 12 hours. Date lock was automatically released.
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Automated Refund Notice */}
+                    {req.refund_id && (
+                      <div className="rounded-xl border border-blue-200 bg-blue-50 p-2.5 text-xs text-blue-800 flex items-center gap-2">
+                        <CheckCircle2 className="h-4 w-4 text-blue-600 shrink-0" />
+                        <span>100% Automated Refund Processed (Razorpay Refund ID: <code className="font-mono font-bold">{req.refund_id}</code>)</span>
+                      </div>
+                    )}
 
                     {/* Customized Dishes Pill List for Kitchen Staff */}
                     {parsedItems.length > 0 && (

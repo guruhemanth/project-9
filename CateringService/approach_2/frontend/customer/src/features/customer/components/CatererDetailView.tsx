@@ -16,6 +16,9 @@ import {
   Trash2,
   UtensilsCrossed,
   Info,
+  Zap,
+  Clock,
+  CheckCircle,
 } from 'lucide-react';
 import { formatPaiseToINR } from '@/lib/formatters';
 import { BookingRequestModal } from './BookingRequestModal';
@@ -276,19 +279,26 @@ export const CatererDetailView: React.FC = () => {
     setSelectedPackage(null);
     setSelectedCustomCombo(null);
     setSelectedCustomDishIds(new Set());
-    setPaymentBooking({
-      ...createdBooking,
-      caterer_name: caterer?.business_name,
-      package_name: packageSnapshot?.name,
-      custom_combo_name: customComboSnapshot?.comboName,
-      customized_items: customComboSnapshot?.selectedItems,
-      guest_count: createdBooking.guest_count || serviceGuests,
-      event_date: createdBooking.event_date,
-      total_amount_paise:
-        (createdBooking as any).total_amount_paise ||
-        createdBooking.total_amount ||
-        (packageSnapshot ? packageSnapshot.price_per_plate * serviceGuests : customTotalCostPaise),
-    });
+
+    const isInstant = caterer?.instant_booking_enabled || createdBooking.booking_mode === 'instant';
+
+    if (isInstant) {
+      setPaymentBooking({
+        ...createdBooking,
+        caterer_name: caterer?.business_name,
+        package_name: packageSnapshot?.name,
+        custom_combo_name: customComboSnapshot?.comboName,
+        customized_items: customComboSnapshot?.selectedItems,
+        guest_count: createdBooking.guest_count || serviceGuests,
+        event_date: createdBooking.event_date,
+        total_amount_paise:
+          (createdBooking as any).total_amount_paise ||
+          createdBooking.total_amount ||
+          (packageSnapshot ? packageSnapshot.price_per_plate * serviceGuests : customTotalCostPaise),
+      });
+    } else {
+      setBookingSuccess(true);
+    }
   };
 
   // Calculations for custom combo
@@ -391,16 +401,19 @@ export const CatererDetailView: React.FC = () => {
       </div>
 
       {bookingSuccess && (
-        <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-emerald-900 flex items-center justify-between shadow-2xs">
+        <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-emerald-900 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 shadow-2xs">
           <div>
-            <h4 className="text-sm font-bold">Booking Request Sent Successfully!</h4>
+            <h4 className="text-sm font-bold flex items-center gap-2">
+              <CheckCircle className="h-4 w-4 text-emerald-600" />
+              <span>Booking Request Sent Successfully!</span>
+            </h4>
             <p className="text-xs text-emerald-800 mt-0.5">
-              Your request for {serviceGuests} guests has reached {caterer.business_name}. You will be notified once accepted.
+              Your inquiry for {serviceGuests} guests has been sent to <b>{caterer.business_name}</b> with ₹0 charged upfront. Once accepted, you'll have a 12-hour payment window to pay the 25% advance to lock your date.
             </p>
           </div>
           <Link
             to="/customer/bookings"
-            className="rounded-lg bg-emerald-600 px-3.5 py-1.5 text-xs font-semibold text-white hover:bg-emerald-700 transition"
+            className="rounded-lg bg-emerald-600 px-3.5 py-1.5 text-xs font-semibold text-white hover:bg-emerald-700 transition shrink-0 text-center"
           >
             View Order History
           </Link>
@@ -411,13 +424,22 @@ export const CatererDetailView: React.FC = () => {
       <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-xs">
         <div className="flex flex-col md:flex-row md:items-start md:justify-between gap-4">
           <div className="space-y-2">
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 flex-wrap">
               <span className="rounded-full bg-emerald-100 px-2.5 py-0.5 text-[10px] font-bold text-emerald-800">
                 Verified FSSAI: {caterer.fssai_number}
               </span>
               <span className="rounded-full bg-slate-100 px-2.5 py-0.5 text-[10px] font-semibold text-slate-700">
                 {caterer.city}, {caterer.state || 'India'}
               </span>
+              {caterer.instant_booking_enabled ? (
+                <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 text-amber-900 border border-amber-300 px-2.5 py-0.5 text-[10px] font-bold">
+                  <Zap className="h-3 w-3 fill-amber-500 text-amber-600" /> Instant Booking
+                </span>
+              ) : (
+                <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 text-slate-700 border border-slate-200 px-2.5 py-0.5 text-[10px] font-semibold">
+                  <Clock className="h-3 w-3 text-slate-500" /> On-Request (₹0 Upfront)
+                </span>
+              )}
               <span className="rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 px-2.5 py-0.5 text-[10px] font-bold">
                 ✨ Custom Combos Available
               </span>

@@ -52,6 +52,7 @@ export interface Caterer {
   max_guests?: number;
   lead_time_days?: number;
   allows_custom_combo?: boolean;
+  instant_booking_enabled?: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -130,6 +131,10 @@ export interface Booking {
   special_requests: string | null;
   status: BookingStatus;
   total_amount: number | null; // in paise
+  booking_mode?: 'instant' | 'on_request';
+  payment_deadline?: string | null;
+  refund_id?: string | null;
+  refunded_at?: string | null;
   commission_pct: number | null;
   commission_amount: number | null; // in paise
   payment_type?: 'full' | 'advance';

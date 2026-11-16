@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Users, Clock, Settings2, Save, CheckCircle2, AlertCircle } from 'lucide-react';
+import { Users, Clock, Settings2, Save, CheckCircle2, AlertCircle, Zap } from 'lucide-react';
 import { apiFetch } from '@/lib/api-client';
 
 interface CatererOrderSettingsProps {
@@ -8,6 +8,7 @@ interface CatererOrderSettingsProps {
   initialMaxGuests?: number;
   initialLeadDays?: number;
   initialAllowsCustomCombo?: boolean;
+  initialInstantBookingEnabled?: boolean;
   onUpdate?: () => void;
 }
 
@@ -17,12 +18,14 @@ export const CatererOrderSettings: React.FC<CatererOrderSettingsProps> = ({
   initialMaxGuests = 2000,
   initialLeadDays = 2,
   initialAllowsCustomCombo = true,
+  initialInstantBookingEnabled = false,
   onUpdate,
 }) => {
   const [minGuests, setMinGuests] = useState<number>(initialMinGuests);
   const [maxGuests, setMaxGuests] = useState<number>(initialMaxGuests);
   const [leadDays, setLeadDays] = useState<number>(initialLeadDays);
   const [allowsCustomCombo, setAllowsCustomCombo] = useState<boolean>(initialAllowsCustomCombo);
+  const [instantBookingEnabled, setInstantBookingEnabled] = useState<boolean>(initialInstantBookingEnabled);
   const [saving, setSaving] = useState(false);
   const [success, setSuccess] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -46,6 +49,7 @@ export const CatererOrderSettings: React.FC<CatererOrderSettingsProps> = ({
           maxGuests,
           leadTimeDays: leadDays,
           allowsCustomCombo,
+          instantBookingEnabled,
         }),
       });
 
@@ -144,6 +148,53 @@ export const CatererOrderSettings: React.FC<CatererOrderSettingsProps> = ({
               />
             </div>
             <p className="text-[11px] text-slate-400 mt-1">Minimum days notice required before feast date</p>
+          </div>
+        </div>
+
+        {/* Dual Booking Mode Selection */}
+        <div className="rounded-xl border border-amber-200/60 bg-amber-50/40 p-4 space-y-3">
+          <div className="flex items-start justify-between gap-4">
+            <div className="flex items-start gap-3">
+              <div className="p-2 rounded-lg bg-amber-100 text-amber-800 shrink-0 mt-0.5">
+                <Zap className="h-5 w-5 fill-amber-500 text-amber-600" />
+              </div>
+              <div>
+                <label htmlFor="instantBookingEnabled" className="text-sm font-bold text-slate-900 cursor-pointer flex items-center gap-2">
+                  <span>Allow Instant Booking</span>
+                  {instantBookingEnabled ? (
+                    <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-semibold text-emerald-800">
+                      Active: Direct Advance Payment
+                    </span>
+                  ) : (
+                    <span className="rounded-full bg-slate-200 px-2 py-0.5 text-[10px] font-semibold text-slate-700">
+                      Standard: On-Request Review
+                    </span>
+                  )}
+                </label>
+                <p className="text-xs text-slate-600 mt-1 leading-relaxed">
+                  {instantBookingEnabled ? (
+                    <span>
+                      Customers can immediately lock their date by paying the <strong>25% Advance upfront</strong> without waiting for your manual review. If you must cancel later, a <strong>100% automated refund</strong> is issued immediately.
+                    </span>
+                  ) : (
+                    <span>
+                      Customers submit an inquiry for <strong>₹0 upfront</strong>. You review and accept first. Once you accept, the customer has a <strong>12-hour payment window</strong> to pay the 25% advance before the tentative slot expires.
+                    </span>
+                  )}
+                </p>
+              </div>
+            </div>
+
+            <label className="relative inline-flex items-center cursor-pointer shrink-0 mt-1">
+              <input
+                type="checkbox"
+                id="instantBookingEnabled"
+                checked={instantBookingEnabled}
+                onChange={(e) => setInstantBookingEnabled(e.target.checked)}
+                className="sr-only peer"
+              />
+              <div className="w-11 h-6 bg-slate-300 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-amber-600"></div>
+            </label>
           </div>
         </div>
 

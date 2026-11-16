@@ -1,5 +1,6 @@
 export type UserRole = 'customer' | 'caterer' | 'admin';
 export type CatererStatus = 'pending' | 'approved' | 'rejected' | 'suspended';
+export type BookingMode = 'instant' | 'on_request';
 export type BookingStatus =
   | 'requested'
   | 'accepted'
@@ -65,6 +66,7 @@ export interface Caterer {
   maxGuests?: number;
   leadTimeDays?: number;
   allowsCustomCombo?: boolean;
+  instantBookingEnabled?: boolean;
   bankAccountHolderName?: string | null;
   bankAccountNumber?: string | null;
   bankIfsc?: string | null;
@@ -194,6 +196,10 @@ export interface Booking {
   city: string;
   specialRequests: string | null;
   status: BookingStatus;
+  bookingMode?: BookingMode;
+  paymentDeadline?: string | null;
+  refundId?: string | null;
+  refundedAt?: string | null;
   totalAmountPaise: number | null;
   commissionPct: number | null;
   commissionAmountPaise: number | null;

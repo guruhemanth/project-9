@@ -71,7 +71,7 @@ export function buildCatererServer() {
       SELECT 
         c.id, c.business_name, c.description, c.city, c.state, c.pincode, c.address, c.service_areas,
         c.cuisines, c.fssai_number, c.gst_number, c.status, c.avg_rating,
-        c.review_count, c.created_at,
+        c.review_count, c.created_at, c.min_guests, c.max_guests, c.lead_time_days, c.allows_custom_combo, c.instant_booking_enabled,
         COALESCE(
           json_agg(
             json_build_object(
@@ -139,6 +139,7 @@ export function buildCatererServer() {
       minGuests: row.min_guests || 25,
       maxGuests: row.max_guests || 2000,
       allowsCustomCombo: row.allows_custom_combo ?? true,
+      instantBookingEnabled: row.instant_booking_enabled ?? false,
       packages: row.packages,
       createdAt: row.created_at,
     }));
@@ -246,6 +247,7 @@ export function buildCatererServer() {
         max_guests: c.max_guests || 2000,
         lead_time_days: c.lead_time_days || 2,
         allows_custom_combo: c.allows_custom_combo ?? true,
+        instant_booking_enabled: c.instant_booking_enabled ?? false,
         commission_pct: c.commission_pct || 15.0,
         bank_account_holder_name: c.bank_account_holder_name,
         bank_account_number: c.bank_account_number,
@@ -418,6 +420,7 @@ export function buildCatererServer() {
         minGuests: c.min_guests || 25,
         maxGuests: c.max_guests || 2000,
         allowsCustomCombo: c.allows_custom_combo ?? true,
+        instantBookingEnabled: c.instant_booking_enabled ?? false,
         packages,
         menuItems,
         createdAt: c.created_at,
@@ -1441,11 +1444,12 @@ export function buildCatererServer() {
         }
       }
 
-      const { minGuests, maxGuests, leadTimeDays, allowsCustomCombo } = req.body as {
+      const { minGuests, maxGuests, leadTimeDays, allowsCustomCombo, instantBookingEnabled } = req.body as {
         minGuests?: number;
         maxGuests?: number;
         leadTimeDays?: number;
         allowsCustomCombo?: boolean;
+        instantBookingEnabled?: boolean;
       };
 
       const res = await pgPool.query(
@@ -1454,10 +1458,11 @@ export function buildCatererServer() {
              max_guests = COALESCE($2, max_guests),
              lead_time_days = COALESCE($3, lead_time_days),
              allows_custom_combo = COALESCE($4, allows_custom_combo),
+             instant_booking_enabled = COALESCE($5, instant_booking_enabled),
              updated_at = NOW()
-         WHERE id = $5
-         RETURNING id, business_name, min_guests, max_guests, lead_time_days, allows_custom_combo`,
-        [minGuests, maxGuests, leadTimeDays, allowsCustomCombo, id]
+         WHERE id = $6
+         RETURNING id, business_name, min_guests, max_guests, lead_time_days, allows_custom_combo, instant_booking_enabled`,
+        [minGuests, maxGuests, leadTimeDays, allowsCustomCombo, instantBookingEnabled, id]
       );
 
       return reply.send({ settings: res.rows[0] });
