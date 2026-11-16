@@ -60,7 +60,15 @@ export const CatererDashboard: React.FC = () => {
       }
 
       if (res?.caterer) {
-        setCaterer(res.caterer);
+        const normalizedCaterer: Caterer = {
+          ...res.caterer,
+          instant_booking_enabled: Boolean(res.caterer.instantBookingEnabled ?? res.caterer.instant_booking_enabled),
+          allows_custom_combo: res.caterer.allowsCustomCombo ?? res.caterer.allows_custom_combo ?? true,
+          min_guests: res.caterer.minGuests ?? res.caterer.min_guests ?? 25,
+          max_guests: res.caterer.maxGuests ?? res.caterer.max_guests ?? 2000,
+          lead_time_days: res.caterer.leadTimeDays ?? res.caterer.lead_time_days ?? 2,
+        };
+        setCaterer(normalizedCaterer);
         if (res.packages && Array.isArray(res.packages)) {
           setPackages(res.packages);
         }
@@ -379,7 +387,7 @@ export const CatererDashboard: React.FC = () => {
           initialMaxGuests={caterer.max_guests}
           initialLeadDays={caterer.lead_time_days}
           initialAllowsCustomCombo={caterer.allows_custom_combo}
-          initialInstantBookingEnabled={caterer.instant_booking_enabled}
+          initialInstantBookingEnabled={Boolean(caterer.instant_booking_enabled ?? (caterer as any).instantBookingEnabled)}
           onUpdate={loadCatererProfile}
         />
       )}

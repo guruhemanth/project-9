@@ -12,10 +12,10 @@ ADD COLUMN IF NOT EXISTS payment_deadline timestamptz,
 ADD COLUMN IF NOT EXISTS refund_id text,
 ADD COLUMN IF NOT EXISTS refunded_at timestamptz;
 
--- 3. Update check constraint on order_svc.bookings status to permit 'expired'
+-- 3. Update check constraint on order_svc.bookings status to permit 'expired' and 'rejected'
 ALTER TABLE order_svc.bookings DROP CONSTRAINT IF EXISTS bookings_status_check;
 ALTER TABLE order_svc.bookings ADD CONSTRAINT bookings_status_check 
-CHECK (status = ANY (ARRAY['requested'::text, 'accepted'::text, 'paid'::text, 'completed'::text, 'cancelled'::text, 'expired'::text]));
+CHECK (status = ANY (ARRAY['requested'::text, 'accepted'::text, 'rejected'::text, 'paid'::text, 'completed'::text, 'cancelled'::text, 'expired'::text]));
 
 -- 4. Index for efficient expiry sweeps on active accepted bookings
 CREATE INDEX IF NOT EXISTS idx_bookings_deadline 

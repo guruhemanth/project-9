@@ -33,30 +33,54 @@ export function buildBookingServer() {
   async function checkAndExpireBookings(): Promise<void> {
     try {
       const expiredRes = await pgPool.query(
-        `UPDATE order_svc.bookings
-         SET status = 'expired', updated_at = NOW()
-         WHERE status = 'accepted' AND payment_deadline IS NOT NULL AND payment_deadline < NOW()
-         RETURNING id, caterer_id, event_date, customer_id`
+        `SELECT id, caterer_id, event_date, customer_id
+         FROM order_svc.bookings
+         WHERE status = 'accepted' AND payment_deadline IS NOT NULL AND payment_deadline < NOW()`
       );
 
       for (const row of expiredRes.rows) {
-        await pgPool.query(
-          `DELETE FROM caterer_svc.caterer_availability WHERE booking_id = $1 AND auto_locked = TRUE`,
-          [row.id]
-        );
-        await pgPool.query(
-          `INSERT INTO order_svc.booking_status_history (booking_id, from_status, to_status, note)
-           VALUES ($1, 'accepted', 'expired', '12-hour customer payment window elapsed without 25% advance payment')`,
-          [row.id]
-        );
-        await enqueueOutboxNotification('booking_cancelled', {
-          bookingId: row.id,
-          customerId: row.customer_id,
-          cancelledBy: 'system',
-          eventDate: row.event_date,
-          refundINR: '₹0',
-          reason: '12-hour payment window expired',
-        });
+        const client = await pgPool.connect();
+        let expiredSuccessfully = false;
+        try {
+          await client.query('BEGIN');
+          const upd = await client.query(
+            `UPDATE order_svc.bookings
+             SET status = 'expired', updated_at = NOW()
+             WHERE id = $1 AND status = 'accepted'`,
+            [row.id]
+          );
+
+          if (upd.rowCount && upd.rowCount > 0) {
+            await client.query(
+              `DELETE FROM caterer_svc.caterer_availability WHERE booking_id = $1 AND auto_locked = TRUE`,
+              [row.id]
+            );
+            await client.query(
+              `INSERT INTO order_svc.booking_status_history (booking_id, from_status, to_status, note)
+               VALUES ($1, 'accepted', 'expired', '12-hour customer payment window elapsed without 25% advance payment')`,
+              [row.id]
+            );
+            expiredSuccessfully = true;
+          }
+          await client.query('COMMIT');
+        } catch (txErr) {
+          await client.query('ROLLBACK');
+          server.log.warn({ txErr, bookingId: row.id }, 'Failed to expire booking row');
+          continue;
+        } finally {
+          client.release();
+        }
+
+        if (expiredSuccessfully) {
+          await enqueueOutboxNotification('booking_cancelled', {
+            bookingId: row.id,
+            customerId: row.customer_id,
+            cancelledBy: 'system',
+            eventDate: row.event_date,
+            refundINR: '₹0',
+            reason: '12-hour payment window expired',
+          });
+        }
       }
     } catch (err: any) {
       server.log.warn({ err }, 'Error checking expired bookings');

@@ -38,6 +38,12 @@ export const IncomingRequestsQueue: React.FC<Props> = ({
   const [actionType, setActionType] = useState<'accept' | 'reject' | null>(null);
   const [note, setNote] = useState('');
   const [chatBooking, setChatBooking] = useState<any | null>(null);
+  const [now, setNow] = useState(() => Date.now());
+
+  React.useEffect(() => {
+    const interval = setInterval(() => setNow(Date.now()), 30000);
+    return () => clearInterval(interval);
+  }, []);
 
   const [filterTab, setFilterTab] = useState<
     'all' | 'requested' | 'accepted' | 'paid' | 'completed' | 'cancelled' | 'expired'
@@ -59,7 +65,6 @@ export const IncomingRequestsQueue: React.FC<Props> = ({
   const getRemainingTime = (deadlineStr?: string | null) => {
     if (!deadlineStr) return null;
     const deadline = new Date(deadlineStr).getTime();
-    const now = Date.now();
     const diffMs = deadline - now;
     if (diffMs <= 0) return 'Expired';
     const hours = Math.floor(diffMs / (1000 * 60 * 60));

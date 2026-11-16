@@ -155,6 +155,7 @@ export const CatererDetailView: React.FC = () => {
             min_guests: data.caterer.minGuests || 25,
             max_guests: data.caterer.maxGuests || 2000,
             allows_custom_combo: data.caterer.allowsCustomCombo ?? true,
+            instant_booking_enabled: Boolean(data.caterer.instantBookingEnabled ?? data.caterer.instant_booking_enabled),
             created_at: data.caterer.createdAt,
             updated_at: data.caterer.updatedAt || data.caterer.createdAt,
           };

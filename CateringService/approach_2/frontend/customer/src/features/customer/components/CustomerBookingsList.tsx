@@ -36,11 +36,16 @@ export const CustomerBookingsList: React.FC = () => {
   const [paymentBooking, setPaymentBooking] = useState<any | null>(null);
   const [reviewBooking, setReviewBooking] = useState<any | null>(null);
   const [chatBooking, setChatBooking] = useState<any | null>(null);
+  const [now, setNow] = useState(() => Date.now());
+
+  useEffect(() => {
+    const interval = setInterval(() => setNow(Date.now()), 30000);
+    return () => clearInterval(interval);
+  }, []);
 
   const getRemainingTime = (deadlineStr?: string | null) => {
     if (!deadlineStr) return null;
     const deadline = new Date(deadlineStr).getTime();
-    const now = Date.now();
     const diffMs = deadline - now;
     if (diffMs <= 0) return 'Expired';
     const hours = Math.floor(diffMs / (1000 * 60 * 60));
@@ -143,12 +148,21 @@ export const CustomerBookingsList: React.FC = () => {
             <XCircle className="h-3 w-3" /> Declined by Caterer
           </span>
         );
-      case 'cancelled':
+      case 'cancelled': {
+        const refundedPaise = b.refund_amount || 0;
+        const paidPaise = b.amount_paid_paise || b.amount_paid || 0;
+        const isFullRefund = paidPaise > 0 && refundedPaise >= paidPaise;
+        const refundBadgeText = b.refund_id
+          ? isFullRefund
+            ? 'Cancelled (100% Refunded)'
+            : `Cancelled (${formatPaiseToINR(refundedPaise)} Refunded)`
+          : 'Cancelled';
         return (
           <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2.5 py-0.5 text-xs font-semibold text-slate-700">
-            {b.refund_id ? 'Cancelled (100% Refunded)' : 'Cancelled'}
+            {refundBadgeText}
           </span>
         );
+      }
       case 'expired':
         return (
           <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2.5 py-0.5 text-xs font-semibold text-slate-600 border border-slate-200">
@@ -357,7 +371,12 @@ export const CustomerBookingsList: React.FC = () => {
                     {booking.refund_id && (
                       <div className="rounded-xl border border-blue-200 bg-blue-50 p-2.5 text-xs text-blue-900 flex items-center gap-2">
                         <CheckCircle className="h-4 w-4 text-blue-600 shrink-0" />
-                        <span>100% Automated Refund Processed (Razorpay ID: <code className="font-mono font-bold">{booking.refund_id}</code>)</span>
+                        <span>
+                          {booking.refund_amount && (booking.amount_paid_paise || booking.amount_paid) && booking.refund_amount < (booking.amount_paid_paise || booking.amount_paid)
+                            ? `Partial Refund (${formatPaiseToINR(booking.refund_amount)}) Processed`
+                            : '100% Automated Refund Processed'}{' '}
+                          (Razorpay ID: <code className="font-mono font-bold">{booking.refund_id}</code>)
+                        </span>
                       </div>
                     )}
 
