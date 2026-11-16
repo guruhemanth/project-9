@@ -1161,9 +1161,9 @@ export function buildPaymentServer() {
         return reply.status(400).send({ error: 'bookingId and refundAmountPaise are required' });
       }
 
-      // Find captured payment for this booking
+      // Find captured payment for this booking (can be captured or partially_refunded)
       const pRes = await pgPool.query(
-        "SELECT id, razorpay_payment_id, amount_paise FROM pay_svc.payments WHERE booking_id = $1 AND status = 'captured' ORDER BY created_at DESC LIMIT 1",
+        "SELECT id, razorpay_payment_id, amount_paise FROM pay_svc.payments WHERE booking_id = $1 AND status IN ('captured', 'partially_refunded') ORDER BY created_at DESC LIMIT 1",
         [bookingId]
       );
 
@@ -1175,11 +1175,31 @@ export function buildPaymentServer() {
       const razorpayPaymentId = payment.razorpay_payment_id;
       let rzpRefundId = `rfnd_sim_${Date.now()}`;
 
+      // Query booking to compute cumulative refunds
+      const bRes = await pgPool.query(
+        'SELECT id, amount_paid_paise, refund_amount_paise, status FROM order_svc.bookings WHERE id = $1',
+        [bookingId]
+      );
+      const currentBooking = bRes.rows[0];
+      const totalPaid = currentBooking?.amount_paid_paise || payment.amount_paise || 0;
+      const prevRefunded = currentBooking?.refund_amount_paise || 0;
+      const remainingRefundable = Math.max(0, totalPaid - prevRefunded);
+
+      if (refundAmountPaise > remainingRefundable) {
+        return reply.status(400).send({
+          error: `Requested refund of ₹${refundAmountPaise / 100} exceeds remaining refundable balance of ₹${remainingRefundable / 100}`,
+          remainingRefundablePaise: remainingRefundable,
+        });
+      }
+
+      const newTotalRefund = prevRefunded + refundAmountPaise;
+      const isFullRefund = newTotalRefund >= totalPaid;
+
       if (razorpayInstance && razorpayPaymentId && !razorpayPaymentId.startsWith('pay_test_') && !process.env.VITEST && env.NODE_ENV !== 'test') {
         try {
           const refundRes = await razorpayInstance.payments.refund(razorpayPaymentId, {
             amount: refundAmountPaise,
-            notes: { bookingId, reason: reason || 'Automated cancellation refund' },
+            notes: { bookingId, reason: reason || 'Automated cancellation / dispute refund' },
           });
           rzpRefundId = refundRes.id;
         } catch (rfErr: any) {
@@ -1187,25 +1207,55 @@ export function buildPaymentServer() {
         }
       }
 
-      // Mark settlement held so admin doesn't disburse
+      // Record refund in payments (mark refunded if full, partially_refunded if partial)
       await pgPool.query(
-        "UPDATE pay_svc.caterer_settlements SET status = 'held', updated_at = NOW() WHERE booking_id = $1",
-        [bookingId]
+        "UPDATE pay_svc.payments SET status = (CASE WHEN $1 = true THEN 'refunded' ELSE 'partially_refunded' END), updated_at = NOW() WHERE id = $2",
+        [isFullRefund, payment.id]
       );
 
-      // Record refund in payments
+      // Record cumulative refund in booking
       await pgPool.query(
-        "UPDATE pay_svc.payments SET status = 'refunded' WHERE id = $1",
-        [payment.id]
+        'UPDATE order_svc.bookings SET refund_id = $1, refunded_at = NOW(), refund_amount_paise = $2, updated_at = NOW() WHERE id = $3',
+        [rzpRefundId, newTotalRefund, bookingId]
       );
 
-      // Record in booking
+      // Adjust caterer settlement: claw back refund amount from net payout; if 0 remaining, hold settlement
       await pgPool.query(
-        "UPDATE order_svc.bookings SET refund_id = $1, refunded_at = NOW(), refund_amount_paise = $2 WHERE id = $3",
-        [rzpRefundId, refundAmountPaise, bookingId]
+        `UPDATE pay_svc.caterer_settlements 
+         SET net_payout_paise = GREATEST(0, net_payout_paise - $1),
+             status = (CASE WHEN net_payout_paise - $1 <= 0 THEN 'held' ELSE status END),
+             updated_at = NOW() 
+         WHERE booking_id = $2`,
+        [refundAmountPaise, bookingId]
       );
 
-      return reply.send({ success: true, refundId: rzpRefundId, amountPaise: refundAmountPaise });
+      // Record in audit_svc.admin_audit_logs
+      const adminActorId = authUser?.userId || internalPayload?.userId || 'system';
+      await pgPool.query(
+        `INSERT INTO audit_svc.admin_audit_logs (admin_id, action, entity_type, entity_id, details, ip_address)
+         VALUES ($1, 'custom_refund', 'booking', $2, $3, $4)`,
+        [
+          adminActorId,
+          bookingId,
+          JSON.stringify({
+            refundAmountPaise,
+            newTotalRefund,
+            isFullRefund,
+            reason: reason || 'Dispute / custom refund',
+            rzpRefundId,
+          }),
+          req.ip || null,
+        ]
+      );
+
+      return reply.send({
+        success: true,
+        refundId: rzpRefundId,
+        amountPaise: refundAmountPaise,
+        refundAmountPaise,
+        newTotalRefundPaise: newTotalRefund,
+        isFullRefund,
+      });
     } catch (err: any) {
       req.log.error(err, 'Internal refund processing failed');
       return reply.status(500).send({ error: 'Internal refund failed' });

@@ -50,6 +50,18 @@ export async function adminCancelBooking(
   });
 }
 
+export async function adminIssueRefund(
+  bookingId: string,
+  refundAmountPaise: number,
+  reason: string,
+  notes?: string
+): Promise<{ success: boolean; booking: any; refundId: string; refundAmountPaise: number; totalRefundAmountPaise: number }> {
+  return apiFetch(`/api/admin/bookings/${bookingId}/refund`, {
+    method: 'POST',
+    body: JSON.stringify({ refundAmountPaise, reason, notes }),
+  });
+}
+
 export async function fetchAdminSettlements(status?: string): Promise<{
   settlements: (CatererSettlement & {
     catererBusinessName?: string;

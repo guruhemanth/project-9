@@ -10,6 +10,7 @@ describe('Payment Service Integration (Dual Options & Webhook)', () => {
   const testCatererId = 'd0000000-0000-0000-0000-000000000001';
   const testBookingId = 'f0000000-0000-0000-0000-000000000001';
   const webhookSecret = process.env.RAZORPAY_WEBHOOK_SECRET || 'test_webhook_secret_vitest_hmac';
+  const jwtSecret = process.env.JWT_SECRET || 'dev_secret_jwt_caterconnect_secure';
   let createdOrderId = '';
 
   beforeAll(async () => {
@@ -592,5 +593,121 @@ describe('Payment Service Integration (Dual Options & Webhook)', () => {
     expect(sCheck.rows[0].gross_amount_paise).toBe(100000);
     expect(sCheck.rows[0].commission_amount_paise).toBe(15000);
     expect(sCheck.rows[0].net_payout_paise).toBe(85000);
+  });
+
+  it('Custom & Partial Refund: claws back settlement payout, updates payment status, logs audit, and blocks over-refund', async () => {
+    // 1. Create paid booking with 100,000 paise paid
+    const bRes = await pgPool.query(
+      `INSERT INTO order_svc.bookings
+       (customer_id, caterer_id, status, booking_mode, event_date, event_time, venue_address, guest_count, total_amount_paise, amount_paid_paise, balance_due_paise, payment_type)
+       VALUES ($1, $2, 'paid', 'instant', CURRENT_DATE + INTERVAL '12 days', '18:00:00', 'Partial Refund Venue', 50, 100000, 100000, 0, 'full')
+       RETURNING id`,
+      [testCustomerId, testCatererId]
+    );
+    const bookingId = bRes.rows[0].id;
+
+    // Insert payment
+    await pgPool.query(
+      `INSERT INTO pay_svc.payments (booking_id, razorpay_order_id, razorpay_payment_id, amount_paise, currency, status, payment_type)
+       VALUES ($1, $2, $3, 100000, 'INR', 'captured', 'full')`,
+      [bookingId, `order_prf_${Date.now()}`, `pay_prf_${Date.now()}`]
+    );
+
+    // Insert settlement
+    await pgPool.query(
+      `INSERT INTO pay_svc.caterer_settlements
+       (booking_id, caterer_id, gross_amount_paise, commission_pct, commission_amount_paise, net_payout_paise, status)
+       VALUES ($1, $2, 100000, 15.00, 15000, 85000, 'pending')`,
+      [bookingId, testCatererId]
+    );
+
+    const internalToken = signInternalToken(
+      { userId: 'admin-dispute-unit-test', role: 'admin' },
+      jwtSecret
+    );
+
+    // 2. Issue 30% partial refund (30,000 paise)
+    const refundRes1 = await app.inject({
+      method: 'POST',
+      url: '/api/payments/internal/refund',
+      headers: {
+        'x-internal-token': internalToken,
+      },
+      payload: {
+        bookingId,
+        refundAmountPaise: 30000,
+        reason: 'Late arrival - 30% gesture refund',
+      },
+    });
+
+    expect(refundRes1.statusCode).toBe(200);
+    const r1Data = refundRes1.json();
+    expect(r1Data.success).toBe(true);
+    expect(r1Data.refundAmountPaise).toBe(30000);
+
+    // Verify payment status is 'partially_refunded'
+    const pay1 = await pgPool.query('SELECT status FROM pay_svc.payments WHERE booking_id = $1', [bookingId]);
+    expect(pay1.rows[0].status).toBe('partially_refunded');
+
+    // Verify booking refund_amount_paise is 30000
+    const bCheck1 = await pgPool.query('SELECT refund_amount_paise FROM order_svc.bookings WHERE id = $1', [bookingId]);
+    expect(bCheck1.rows[0].refund_amount_paise).toBe(30000);
+
+    // Verify settlement clawback: 85000 - 30000 = 55000, still pending
+    const set1 = await pgPool.query('SELECT net_payout_paise, status FROM pay_svc.caterer_settlements WHERE booking_id = $1', [bookingId]);
+    expect(set1.rows[0].net_payout_paise).toBe(55000);
+    expect(set1.rows[0].status).toBe('pending');
+
+    // Verify audit log
+    const audit1 = await pgPool.query(
+      `SELECT * FROM audit_svc.admin_audit_logs WHERE entity_id = $1 AND action = 'custom_refund'`,
+      [bookingId]
+    );
+    expect(audit1.rows.length).toBeGreaterThan(0);
+    expect(audit1.rows[0].admin_id).toBe('admin-dispute-unit-test');
+
+    // 3. Issue over-refund: attempt 80,000 paise when only 70,000 is left
+    const refundOver = await app.inject({
+      method: 'POST',
+      url: '/api/payments/internal/refund',
+      headers: {
+        'x-internal-token': internalToken,
+      },
+      payload: {
+        bookingId,
+        refundAmountPaise: 80000,
+        reason: 'Over refund attempt',
+      },
+    });
+    expect(refundOver.statusCode).toBe(400);
+    expect(refundOver.json().error).toContain('exceeds remaining refundable balance');
+
+    // 4. Issue remaining 70,000 paise refund (full refund completed)
+    const refundRes2 = await app.inject({
+      method: 'POST',
+      url: '/api/payments/internal/refund',
+      headers: {
+        'x-internal-token': internalToken,
+      },
+      payload: {
+        bookingId,
+        refundAmountPaise: 70000,
+        reason: 'Spoiled food escalation - remaining refund',
+      },
+    });
+    expect(refundRes2.statusCode).toBe(200);
+
+    // Payment should now be 'refunded'
+    const pay2 = await pgPool.query('SELECT status FROM pay_svc.payments WHERE booking_id = $1', [bookingId]);
+    expect(pay2.rows[0].status).toBe('refunded');
+
+    // Booking refund_amount_paise should now be 100000
+    const bCheck2 = await pgPool.query('SELECT refund_amount_paise FROM order_svc.bookings WHERE id = $1', [bookingId]);
+    expect(bCheck2.rows[0].refund_amount_paise).toBe(100000);
+
+    // Settlement payout is now 0 and status is 'held'
+    const set2 = await pgPool.query('SELECT net_payout_paise, status FROM pay_svc.caterer_settlements WHERE booking_id = $1', [bookingId]);
+    expect(set2.rows[0].net_payout_paise).toBe(0);
+    expect(set2.rows[0].status).toBe('held');
   });
 });

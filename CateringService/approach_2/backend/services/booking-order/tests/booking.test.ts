@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { buildBookingServer } from '../src';
 import { pgPool } from '../src/db';
 
@@ -473,5 +473,108 @@ describe('Booking & Order Service Integration', () => {
       [catererId, expiredDate]
     );
     expect(slotCheck.rows.length).toBe(0);
+  });
+
+  it('POST /api/admin/bookings/:id/refund enforces role, boundary checks, and updates booking on success', async () => {
+    const catererId = 'd0000000-0000-0000-0000-000000000001';
+    const customerId = 'c0000000-0000-0000-0000-000000000001';
+    const adminHeaders = {
+      'x-user-id': 'c0000000-0000-0000-0000-000000000003',
+      'x-user-role': 'admin',
+    };
+    const customerHeaders = {
+      'x-user-id': customerId,
+      'x-user-role': 'customer',
+    };
+
+    // 1. Create a paid booking with 100,000 paise (₹1,000)
+    const bRes = await pgPool.query(
+      `INSERT INTO order_svc.bookings
+       (customer_id, caterer_id, status, booking_mode, event_date, event_time, venue_address, guest_count, total_amount_paise, amount_paid_paise, balance_due_paise, payment_type)
+       VALUES ($1, $2, 'paid', 'instant', CURRENT_DATE + INTERVAL '14 days', '18:00:00', 'Refund Test Hall', 50, 100000, 100000, 0, 'full')
+       RETURNING id`,
+      [customerId, catererId]
+    );
+    const testBookingId = bRes.rows[0].id;
+
+    // 2. Non-admin forbidden
+    const nonAdminRes = await app.inject({
+      method: 'POST',
+      url: `/api/admin/bookings/${testBookingId}/refund`,
+      headers: customerHeaders,
+      payload: { refundAmountPaise: 25000, reason: 'Dispute' },
+    });
+    expect(nonAdminRes.statusCode).toBe(403);
+
+    // 3. Invalid paise (0 or negative)
+    const invalidPaiseRes = await app.inject({
+      method: 'POST',
+      url: `/api/admin/bookings/${testBookingId}/refund`,
+      headers: adminHeaders,
+      payload: { refundAmountPaise: -500, reason: 'Invalid amount' },
+    });
+    expect(invalidPaiseRes.statusCode).toBe(400);
+
+    // 4. Missing reason
+    const missingReasonRes = await app.inject({
+      method: 'POST',
+      url: `/api/admin/bookings/${testBookingId}/refund`,
+      headers: adminHeaders,
+      payload: { refundAmountPaise: 25000, reason: '   ' },
+    });
+    expect(missingReasonRes.statusCode).toBe(400);
+
+    // 5. Exceeding max refundable (attempting ₹1,500 on a ₹1,000 booking)
+    const overRefundRes = await app.inject({
+      method: 'POST',
+      url: `/api/admin/bookings/${testBookingId}/refund`,
+      headers: adminHeaders,
+      payload: { refundAmountPaise: 150000, reason: 'Over refund test' },
+    });
+    expect(overRefundRes.statusCode).toBe(400);
+    expect(overRefundRes.json().error).toContain('exceeds maximum refundable balance');
+
+    // 6. Mock payment service response and execute successful partial refund
+    const fetchSpy = vi.spyOn(global, 'fetch').mockImplementation(async (url: any) => {
+      if (typeof url === 'string' && url.includes('/api/payments/internal/refund')) {
+        return new Response(
+          JSON.stringify({
+            success: true,
+            refundId: 'rfnd_sim_unit_test',
+            refundAmountPaise: 40000,
+            amountPaise: 40000,
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+      return new Response(JSON.stringify({ error: 'not found' }), { status: 404 });
+    });
+
+    try {
+      const goodRefundRes = await app.inject({
+        method: 'POST',
+        url: `/api/admin/bookings/${testBookingId}/refund`,
+        headers: adminHeaders,
+        payload: {
+          refundAmountPaise: 40000,
+          reason: 'quality_issue',
+          notes: 'Customer reported delayed dessert service',
+        },
+      });
+
+      expect(goodRefundRes.statusCode).toBe(200);
+      const resBody = goodRefundRes.json();
+      expect(resBody.success).toBe(true);
+
+      // Verify status history record
+      const histCheck = await pgPool.query(
+        'SELECT note FROM order_svc.booking_status_history WHERE booking_id = $1 ORDER BY created_at DESC LIMIT 1',
+        [testBookingId]
+      );
+      expect(histCheck.rows.length).toBe(1);
+      expect(histCheck.rows[0].note).toContain('Admin issued custom refund of ₹400');
+    } finally {
+      fetchSpy.mockRestore();
+    }
   });
 });

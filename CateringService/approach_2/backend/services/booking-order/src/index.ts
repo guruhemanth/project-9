@@ -888,10 +888,146 @@ export function buildBookingServer() {
         [id, currentStatus, authUser.userId]
       );
 
+      // Trigger payment gateway refund for customer if amount was paid
+      if (refundAmountPaise > 0) {
+        const paymentSvcUrl = process.env.PAYMENT_SERVICE_URL || 'http://localhost:4004';
+        try {
+          const internalToken = signInternalToken(
+            { userId: authUser.userId, role: 'admin' },
+            jwtSecret
+          );
+          await fetch(`${paymentSvcUrl}/api/payments/internal/refund`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'x-internal-token': internalToken,
+            },
+            body: JSON.stringify({
+              bookingId: id,
+              refundAmountPaise,
+              reason: reason || 'Cancelled by admin dispute resolution',
+            }),
+          });
+        } catch (rfErr: any) {
+          req.log.warn({ rfErr }, 'Automated admin cancel refund trigger failed');
+        }
+      }
+
       return reply.send({ success: true, booking: updateRes.rows[0], refundAmountPaise });
     } catch (err: any) {
       req.log.error(err);
       return reply.status(500).send({ error: 'Failed to cancel booking via admin' });
+    }
+  });
+
+  // Admin custom / partial refund endpoint for disputes and quality issues
+  server.post('/api/admin/bookings/:id/refund', async (req, reply) => {
+    try {
+      const authUser = getAuthenticatedUser(req);
+      if (!authUser || authUser.role !== 'admin') {
+        return reply.status(403).send({ error: 'Forbidden: Admin access required' });
+      }
+
+      const { id } = req.params as { id: string };
+      const { refundAmountPaise, reason, notes } = (req.body as any) || {};
+
+      if (!refundAmountPaise || typeof refundAmountPaise !== 'number' || refundAmountPaise <= 0) {
+        return reply.status(400).send({ error: 'refundAmountPaise must be a positive integer in paise' });
+      }
+
+      if (!reason || typeof reason !== 'string' || !reason.trim()) {
+        return reply.status(400).send({ error: 'A valid dispute/refund reason is required' });
+      }
+
+      const cur = await pgPool.query(
+        'SELECT id, status, customer_id, caterer_id, amount_paid_paise, refund_amount_paise, total_amount_paise FROM order_svc.bookings WHERE id = $1',
+        [id]
+      );
+      if (cur.rows.length === 0) {
+        return reply.status(404).send({ error: 'Booking not found' });
+      }
+
+      const booking = cur.rows[0];
+      const amountPaid = booking.amount_paid_paise || 0;
+      const prevRefund = booking.refund_amount_paise || 0;
+      const maxRefundable = amountPaid - prevRefund;
+
+      if (amountPaid <= 0) {
+        return reply.status(400).send({ error: 'Cannot refund a booking with no payments recorded' });
+      }
+
+      if (refundAmountPaise > maxRefundable) {
+        return reply.status(400).send({
+          error: `Requested refund of ₹${refundAmountPaise / 100} exceeds maximum refundable balance of ₹${maxRefundable / 100}`,
+          maxRefundablePaise: maxRefundable,
+        });
+      }
+
+      // Call payment-service internal refund endpoint
+      const paymentSvcUrl = process.env.PAYMENT_SERVICE_URL || 'http://localhost:4004';
+      const internalToken = signInternalToken(
+        { userId: authUser.userId, role: 'admin' },
+        jwtSecret
+      );
+
+      let refundResult: any = null;
+      try {
+        const rfRes = await fetch(`${paymentSvcUrl}/api/payments/internal/refund`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-internal-token': internalToken,
+          },
+          body: JSON.stringify({
+            bookingId: id,
+            refundAmountPaise,
+            reason: `${reason.trim()}${notes ? ` - ${notes.trim()}` : ''}`,
+          }),
+        });
+
+        if (!rfRes.ok) {
+          const errData = await rfRes.json().catch(() => ({}));
+          return reply.status(rfRes.status).send({ error: errData.error || 'Payment gateway refund failed' });
+        }
+        refundResult = await rfRes.json();
+      } catch (rfErr: any) {
+        req.log.error({ rfErr }, 'Failed to connect to payment service for refund');
+        return reply.status(502).send({ error: 'Failed to communicate with payment gateway service' });
+      }
+
+      // Record in booking status history
+      await pgPool.query(
+        `INSERT INTO order_svc.booking_status_history (booking_id, from_status, to_status, changed_by, note)
+         VALUES ($1, $2, $2, $3, $4)`,
+        [
+          id,
+          booking.status,
+          authUser.userId,
+          `Admin issued custom refund of ₹${(refundAmountPaise / 100).toLocaleString('en-IN')}. Reason: ${reason}${notes ? ` (${notes})` : ''}`,
+        ]
+      );
+
+      // Enqueue Outbox notification to customer
+      await enqueueOutboxNotification('booking_refunded', {
+        bookingId: id,
+        customerId: booking.customer_id,
+        refundAmountINR: `₹${(refundAmountPaise / 100).toLocaleString('en-IN')}`,
+        reason,
+      });
+
+      // Fetch fresh updated booking
+      const refreshed = await pgPool.query('SELECT * FROM order_svc.bookings WHERE id = $1', [id]);
+
+      return reply.send({
+        success: true,
+        refundId: refundResult?.refundId,
+        refundAmountPaise,
+        totalRefundAmountPaise: refreshed.rows[0].refund_amount_paise,
+        booking: refreshed.rows[0],
+      });
+    } catch (err: any) {
+      req.log.error(err);
+      return reply.status(500).send({ error: 'Failed to issue custom refund' });
     }
   });
 

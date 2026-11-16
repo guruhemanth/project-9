@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Calendar, MapPin, AlertTriangle, X, Search, Clock } from 'lucide-react';
+import { Calendar, MapPin, AlertTriangle, X, Search, Clock, IndianRupee, CheckCircle2 } from 'lucide-react';
 import { formatPaiseToINR, formatIndianDate } from '@/lib/formatters';
 import type { Booking, BookingStatus } from '@caterconnect/shared';
 
@@ -13,18 +13,27 @@ interface Props {
   })[];
   loading: boolean;
   onCancelDispute: (bookingId: string, reason: string) => Promise<void>;
+  onIssueRefund?: (bookingId: string, refundAmountPaise: number, reason: string, notes?: string) => Promise<void>;
 }
 
 export const AdminBookingsList: React.FC<Props> = ({
   bookings,
   loading,
   onCancelDispute,
+  onIssueRefund,
 }) => {
   const [filterStatus, setFilterStatus] = useState<string>('all');
   const [search, setSearch] = useState('');
   const [selectedBookingForCancel, setSelectedBookingForCancel] = useState<Booking | null>(null);
   const [disputeReason, setDisputeReason] = useState('');
   const [submitting, setSubmitting] = useState(false);
+
+  // Custom Refund Modal State
+  const [selectedBookingForRefund, setSelectedBookingForRefund] = useState<any | null>(null);
+  const [refundAmountINR, setRefundAmountINR] = useState<string>('');
+  const [refundReasonType, setRefundReasonType] = useState<string>('Food Quality / Spoilage Complaint');
+  const [refundNotes, setRefundNotes] = useState<string>('');
+  const [refunding, setRefunding] = useState<boolean>(false);
 
   const filtered = bookings.filter((b) => {
     const matchesStatus = filterStatus === 'all' || b.status === filterStatus;
@@ -45,6 +54,28 @@ export const AdminBookingsList: React.FC<Props> = ({
       setDisputeReason('');
     } finally {
       setSubmitting(false);
+    }
+  };
+
+  const handleConfirmRefund = async () => {
+    if (!selectedBookingForRefund || !onIssueRefund) return;
+    const amountVal = parseFloat(refundAmountINR);
+    if (isNaN(amountVal) || amountVal <= 0) return;
+
+    const refundAmountPaise = Math.round(amountVal * 100);
+    setRefunding(true);
+    try {
+      await onIssueRefund(
+        selectedBookingForRefund.id,
+        refundAmountPaise,
+        refundReasonType,
+        refundNotes.trim() || undefined
+      );
+      setSelectedBookingForRefund(null);
+      setRefundAmountINR('');
+      setRefundNotes('');
+    } finally {
+      setRefunding(false);
     }
   };
 
@@ -132,6 +163,11 @@ export const AdminBookingsList: React.FC<Props> = ({
                       {b.paymentType === 'advance' ? '25% Advance' : '100% Full'}
                     </span>
                   )}
+                  {(b.refundAmountPaise || 0) > 0 && (
+                    <span className="rounded bg-rose-100 px-2 py-0.5 text-[10px] font-bold text-rose-800">
+                      Refunded: {formatPaiseToINR(b.refundAmountPaise)}
+                    </span>
+                  )}
                 </div>
 
                 <div className="text-xs text-slate-600 flex flex-wrap gap-x-4 gap-y-1">
@@ -180,21 +216,221 @@ export const AdminBookingsList: React.FC<Props> = ({
                     <span>Paid:</span>
                     <span className="font-medium text-slate-700">{formatPaiseToINR(b.amountPaidPaise || 0)}</span>
                   </div>
+                  {(b.refundAmountPaise || 0) > 0 && (
+                    <div className="flex justify-between gap-2 text-rose-600 font-bold border-t border-slate-200 mt-1 pt-1">
+                      <span>Total Refund:</span>
+                      <span>-{formatPaiseToINR(b.refundAmountPaise)}</span>
+                    </div>
+                  )}
                 </div>
 
-                {b.status !== 'completed' && b.status !== 'cancelled' && (
-                  <button
-                    type="button"
-                    onClick={() => setSelectedBookingForCancel(b)}
-                    className="flex items-center gap-1 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-semibold text-rose-700 hover:bg-rose-100 transition shadow-2xs self-start sm:self-auto"
-                  >
-                    <AlertTriangle className="h-3.5 w-3.5" />
-                    <span>Cancel Dispute</span>
-                  </button>
-                )}
+                <div className="flex flex-col sm:flex-row items-center gap-2">
+                  {/* Custom Refund button for any booking with refundable money */}
+                  {onIssueRefund && (b.amountPaidPaise || 0) > (b.refundAmountPaise || 0) && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSelectedBookingForRefund(b);
+                        const maxINR = ((b.amountPaidPaise || 0) - (b.refundAmountPaise || 0)) / 100;
+                        setRefundAmountINR(maxINR.toString());
+                        setRefundReasonType('Food Quality / Spoilage Complaint');
+                        setRefundNotes('');
+                      }}
+                      className="flex items-center gap-1 rounded-lg border border-purple-200 bg-purple-50 px-3 py-2 text-xs font-semibold text-purple-700 hover:bg-purple-100 transition shadow-2xs self-start sm:self-auto"
+                    >
+                      <IndianRupee className="h-3.5 w-3.5" />
+                      <span>Custom Refund</span>
+                    </button>
+                  )}
+
+                  {b.status !== 'completed' && b.status !== 'cancelled' && (
+                    <button
+                      type="button"
+                      onClick={() => setSelectedBookingForCancel(b)}
+                      className="flex items-center gap-1 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-semibold text-rose-700 hover:bg-rose-100 transition shadow-2xs self-start sm:self-auto"
+                    >
+                      <AlertTriangle className="h-3.5 w-3.5" />
+                      <span>Cancel Dispute</span>
+                    </button>
+                  )}
+                </div>
               </div>
             </div>
           ))}
+        </div>
+      )}
+
+      {/* Admin Custom Refund Modal */}
+      {selectedBookingForRefund && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-xs p-4">
+          <div className="w-full max-w-lg rounded-2xl bg-white p-6 shadow-xl space-y-4">
+            <div className="flex items-center justify-between border-b pb-3 border-slate-100">
+              <div className="flex items-center gap-2 text-purple-700">
+                <IndianRupee className="h-5 w-5" />
+                <h3 className="font-bold text-base text-slate-900">Issue Custom / Partial Refund</h3>
+              </div>
+              <button
+                onClick={() => setSelectedBookingForRefund(null)}
+                className="text-slate-400 hover:text-slate-600"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            <div className="bg-slate-50 p-3 rounded-xl border border-slate-200 text-xs space-y-1">
+              <div className="flex justify-between">
+                <span className="text-slate-600">Booking ID:</span>
+                <span className="font-mono font-bold text-slate-900">#{selectedBookingForRefund.id.slice(0, 8)}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-600">Host / Caterer:</span>
+                <span className="font-semibold text-slate-900">
+                  {selectedBookingForRefund.customerName || 'Customer'} • {selectedBookingForRefund.catererBusinessName || 'Caterer'}
+                </span>
+              </div>
+              <div className="flex justify-between border-t border-slate-200 pt-1 mt-1 font-semibold">
+                <span className="text-slate-600">Customer Amount Paid:</span>
+                <span className="text-slate-900">{formatPaiseToINR(selectedBookingForRefund.amountPaidPaise || 0)}</span>
+              </div>
+              {(selectedBookingForRefund.refundAmountPaise || 0) > 0 && (
+                <div className="flex justify-between text-rose-600">
+                  <span>Previously Refunded:</span>
+                  <span>-{formatPaiseToINR(selectedBookingForRefund.refundAmountPaise)}</span>
+                </div>
+              )}
+              <div className="flex justify-between font-bold text-purple-800 border-t border-slate-200 pt-1 mt-1">
+                <span>Maximum Refundable Remaining:</span>
+                <span>
+                  {formatPaiseToINR(
+                    Math.max(0, (selectedBookingForRefund.amountPaidPaise || 0) - (selectedBookingForRefund.refundAmountPaise || 0))
+                  )}
+                </span>
+              </div>
+            </div>
+
+            {/* Quick Presets */}
+            <div className="space-y-1.5">
+              <label className="text-xs font-semibold text-slate-700">Quick Percentage Presets:</label>
+              <div className="flex items-center gap-2">
+                {[
+                  { label: '25% (Advance Portion)', pct: 0.25 },
+                  { label: '50% (Half Order)', pct: 0.5 },
+                  { label: '100% (Full Paid)', pct: 1.0 },
+                ].map((preset) => {
+                  const maxPaise = Math.max(
+                    0,
+                    (selectedBookingForRefund.amountPaidPaise || 0) - (selectedBookingForRefund.refundAmountPaise || 0)
+                  );
+                  const presetPaise = Math.min(
+                    maxPaise,
+                    Math.round(((selectedBookingForRefund.amountPaidPaise || 0) * preset.pct))
+                  );
+                  const presetINR = (presetPaise / 100).toFixed(0);
+                  return (
+                    <button
+                      key={preset.label}
+                      type="button"
+                      onClick={() => setRefundAmountINR(presetINR)}
+                      className="rounded-lg border border-purple-200 bg-purple-50/60 hover:bg-purple-100 px-2.5 py-1 text-xs font-semibold text-purple-800 transition"
+                    >
+                      {preset.label}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Custom Amount Input */}
+            <div className="space-y-1.5">
+              <label className="text-xs font-semibold text-slate-700">Custom Refund Amount in ₹:</label>
+              <div className="relative">
+                <span className="absolute left-3 top-2.5 text-xs font-bold text-slate-500">₹</span>
+                <input
+                  type="number"
+                  min="1"
+                  step="1"
+                  max={(
+                    Math.max(
+                      0,
+                      (selectedBookingForRefund.amountPaidPaise || 0) - (selectedBookingForRefund.refundAmountPaise || 0)
+                    ) / 100
+                  ).toString()}
+                  value={refundAmountINR}
+                  onChange={(e) => setRefundAmountINR(e.target.value)}
+                  placeholder="Enter exact custom refund amount in ₹"
+                  className="w-full rounded-lg border border-slate-300 pl-7 pr-3 py-2 text-xs font-bold text-slate-900 focus:outline-none focus:border-purple-600"
+                />
+              </div>
+            </div>
+
+            {/* Dispute Reason Dropdown */}
+            <div className="space-y-1.5">
+              <label className="text-xs font-semibold text-slate-700">Dispute & Refund Reason:</label>
+              <select
+                value={refundReasonType}
+                onChange={(e) => setRefundReasonType(e.target.value)}
+                className="w-full rounded-lg border border-slate-300 p-2 text-xs focus:outline-none focus:border-purple-600"
+              >
+                <option value="Food Quality / Spoilage Complaint">Food Quality / Spoilage Complaint</option>
+                <option value="Missing Package Dishes / Dessert Counter">Missing Package Dishes / Dessert Counter</option>
+                <option value="Late Delivery / Delayed Service">Late Delivery / Delayed Service</option>
+                <option value="Guest Count / Food Quantity Shortage">Guest Count / Food Quantity Shortage</option>
+                <option value="Mutual Agreement / Goodwill Settlement">Mutual Agreement / Goodwill Settlement</option>
+                <option value="Other Administrative Dispute">Other Administrative Dispute</option>
+              </select>
+            </div>
+
+            {/* Additional Administrative Notes */}
+            <div className="space-y-1.5">
+              <label className="text-xs font-semibold text-slate-700">Administrative Notes / Investigation Details:</label>
+              <textarea
+                value={refundNotes}
+                onChange={(e) => setRefundNotes(e.target.value)}
+                placeholder="e.g. Verified photos of spoiled paneer dish. Caterer agreed to ₹5,000 deduction from pending settlement."
+                rows={2}
+                className="w-full rounded-lg border border-slate-300 p-2.5 text-xs focus:outline-none focus:border-purple-600"
+              />
+            </div>
+
+            {/* Impact Notice */}
+            <div className="rounded-lg bg-purple-50/70 border border-purple-200 p-2.5 text-[11px] text-purple-900 space-y-0.5">
+              <div className="flex items-center gap-1 font-bold">
+                <CheckCircle2 className="h-3.5 w-3.5 text-purple-700" />
+                <span>Automated Payout Ledger Deduction</span>
+              </div>
+              <p className="text-purple-700">
+                This custom refund will be processed immediately via Razorpay to the customer's source account and
+                automatically deducted from the caterer's net settlement ledger.
+              </p>
+            </div>
+
+            <div className="flex justify-end gap-2 pt-2 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={() => setSelectedBookingForRefund(null)}
+                className="rounded-lg border border-slate-300 px-4 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={
+                  !refundAmountINR ||
+                  parseFloat(refundAmountINR) <= 0 ||
+                  parseFloat(refundAmountINR) >
+                    Math.max(
+                      0,
+                      (selectedBookingForRefund.amountPaidPaise || 0) - (selectedBookingForRefund.refundAmountPaise || 0)
+                    ) / 100 ||
+                  refunding
+                }
+                onClick={handleConfirmRefund}
+                className="rounded-lg bg-purple-700 px-4 py-2 text-xs font-bold text-white hover:bg-purple-800 disabled:opacity-50 transition"
+              >
+                {refunding ? 'Processing Gateway Refund...' : `Confirm Refund ₹${refundAmountINR || '0'}`}
+              </button>
+            </div>
+          </div>
         </div>
       )}
 

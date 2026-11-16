@@ -21,6 +21,7 @@ import {
   updateCatererStatus,
   fetchAdminBookings,
   adminCancelBooking,
+  adminIssueRefund,
   fetchAdminSettlements,
   disburseSettlement,
 } from './api';
@@ -116,6 +117,20 @@ export const AdminDashboard: React.FC = () => {
       await loadAllAdminData(true);
     } catch (err: any) {
       alert(`Dispute cancellation failed: ${err.message}`);
+    }
+  };
+
+  const handleIssueRefund = async (
+    bookingId: string,
+    refundAmountPaise: number,
+    reason: string,
+    notes?: string
+  ) => {
+    try {
+      await adminIssueRefund(bookingId, refundAmountPaise, reason, notes);
+      await loadAllAdminData(true);
+    } catch (err: any) {
+      alert(`Refund failed: ${err.message}`);
     }
   };
 
@@ -327,6 +342,7 @@ export const AdminDashboard: React.FC = () => {
           bookings={bookings}
           loading={loading}
           onCancelDispute={handleCancelDispute}
+          onIssueRefund={handleIssueRefund}
         />
       )}
 
