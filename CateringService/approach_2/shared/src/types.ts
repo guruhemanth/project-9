@@ -168,6 +168,9 @@ export interface CatererSettlement {
   bankName?: string | null;
   upiId?: string | null;
   bankVerified?: boolean;
+  eventDate?: string | null;
+  guestCount?: number | null;
+  bookingStatus?: string | null;
 }
 
 export interface Package {

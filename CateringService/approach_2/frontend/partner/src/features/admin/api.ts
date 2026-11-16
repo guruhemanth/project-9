@@ -83,6 +83,26 @@ export async function disburseSettlement(
   });
 }
 
+export async function holdSettlement(
+  settlementId: string,
+  reason: string
+): Promise<{ success: boolean; settlement: CatererSettlement }> {
+  return apiFetch(`/api/admin/settlements/${settlementId}/hold`, {
+    method: 'POST',
+    body: JSON.stringify({ reason }),
+  });
+}
+
+export async function releaseSettlement(
+  settlementId: string,
+  notes?: string
+): Promise<{ success: boolean; settlement: CatererSettlement }> {
+  return apiFetch(`/api/admin/settlements/${settlementId}/release`, {
+    method: 'POST',
+    body: JSON.stringify({ notes }),
+  });
+}
+
 export async function updateCommissionPct(_pct: number): Promise<boolean> {
   return true;
 }

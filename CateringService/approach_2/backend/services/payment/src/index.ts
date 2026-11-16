@@ -863,8 +863,8 @@ export function buildPaymentServer() {
     }
   });
 
-  // Admin marks settlement as disbursed with bank UTR reference - ADMIN GUARD
-  server.post('/api/payments/settlements/:id/disburse', async (req, reply) => {
+  // Admin marks settlement as disbursed with bank UTR reference - ADMIN GUARD (P0-11 Safety Gate)
+  const disburseSettlementHandler = async (req: any, reply: any) => {
     try {
       const authUser = getAuthenticatedUser(req);
       if (!authUser || authUser.role !== 'admin') {
@@ -882,11 +882,16 @@ export function buildPaymentServer() {
 
       const { utrReference } = parseResult.data;
 
-      // Production Guard: Verify caterer has registered bank details before allowing disbursement
+      // Production & Safety Guard (P0-11): Verify status, bank details, net payout, and event completion
       const checkRes = await pgPool.query(
-        `SELECT s.id, s.status, c.id as caterer_id, c.business_name, c.bank_account_number, c.bank_ifsc
+        `SELECT 
+           s.id, s.status, s.net_payout_paise, s.booking_id,
+           c.id as caterer_id, c.business_name, c.bank_account_number, c.bank_ifsc,
+           b.status as booking_status,
+           TO_CHAR(b.event_date, 'YYYY-MM-DD') as event_date
          FROM pay_svc.caterer_settlements s
          JOIN caterer_svc.caterers c ON s.caterer_id = c.id
+         LEFT JOIN order_svc.bookings b ON s.booking_id = b.id
          WHERE s.id = $1`,
         [id]
       );
@@ -896,10 +901,57 @@ export function buildPaymentServer() {
       }
 
       const settlementInfo = checkRes.rows[0];
+
+      // Status checks
+      if (settlementInfo.status === 'held') {
+        return reply.status(400).send({
+          error: 'Cannot disburse payout: Settlement is currently on hold. Release the hold before disbursing.',
+          code: 'SETTLEMENT_HELD',
+        });
+      }
+
+      if (settlementInfo.status === 'settled') {
+        return reply.status(400).send({
+          error: 'Settlement has already been disbursed.',
+          code: 'ALREADY_SETTLED',
+        });
+      }
+
+      const netPayout = parseInt(settlementInfo.net_payout_paise, 10);
+      if (netPayout <= 0) {
+        return reply.status(400).send({
+          error: 'Cannot disburse settlement with net payout of ₹0. Funds have been refunded or held back.',
+          code: 'ZERO_PAYOUT',
+        });
+      }
+
       if (!settlementInfo.bank_account_number || !settlementInfo.bank_ifsc) {
         return reply.status(422).send({
           error: `Cannot disburse payout: Caterer '${settlementInfo.business_name}' has not registered bank account details (Account Number & IFSC) yet. Payout held until bank account is registered.`,
           code: 'BANK_DETAILS_MISSING',
+        });
+      }
+
+      // P0-11: Release Safety Gate — Booking must not be cancelled, and must be completed OR event date past
+      if (settlementInfo.booking_status === 'cancelled') {
+        return reply.status(400).send({
+          error: 'Cannot disburse settlement for a cancelled booking.',
+          code: 'BOOKING_CANCELLED',
+        });
+      }
+
+      const eventDateStr = settlementInfo.event_date;
+      const isEventPassed = eventDateStr
+        ? new Date(`${eventDateStr}T23:59:59+05:30`).getTime() <= Date.now()
+        : false;
+      const isCompleted = settlementInfo.booking_status === 'completed';
+
+      if (!isCompleted && !isEventPassed) {
+        return reply.status(400).send({
+          error: `Cannot disburse settlement before the event has occurred. Event date is ${eventDateStr} and booking status is '${settlementInfo.booking_status}'. Payout can only be released after the event has occurred or is marked completed.`,
+          code: 'EVENT_IN_FUTURE',
+          eventDate: eventDateStr,
+          bookingStatus: settlementInfo.booking_status,
         });
       }
 
@@ -925,6 +977,7 @@ export function buildPaymentServer() {
             utrReference,
             netPayoutPaise: updateRes.rows[0].net_payout_paise,
             catererId: updateRes.rows[0].caterer_id,
+            bookingId: settlementInfo.booking_id,
           }),
           req.ip || null,
         ]
@@ -935,7 +988,10 @@ export function buildPaymentServer() {
       req.log.error(err);
       return reply.status(500).send({ error: 'Failed to disburse settlement' });
     }
-  });
+  };
+
+  server.post('/api/payments/settlements/:id/disburse', disburseSettlementHandler);
+  server.post('/api/admin/settlements/:id/disburse', disburseSettlementHandler);
 
   // Admin: List all caterer settlements across the platform - ADMIN GUARD
   server.get('/api/admin/settlements', async (req, reply) => {
@@ -958,7 +1014,9 @@ export function buildPaymentServer() {
           c.bank_name,
           c.upi_id,
           c.bank_verified,
-          b.event_date, b.guest_count
+          TO_CHAR(b.event_date, 'YYYY-MM-DD') as event_date,
+          b.guest_count,
+          b.status as booking_status
         FROM pay_svc.caterer_settlements s
         JOIN caterer_svc.caterers c ON s.caterer_id = c.id
         LEFT JOIN order_svc.bookings b ON s.booking_id = b.id
@@ -991,6 +1049,7 @@ export function buildPaymentServer() {
         settledAt: r.settled_at,
         eventDate: r.event_date,
         guestCount: r.guest_count,
+        bookingStatus: r.booking_status,
         createdAt: r.created_at,
         updatedAt: r.updated_at,
       }));
@@ -1063,8 +1122,8 @@ export function buildPaymentServer() {
     }
   });
 
-  // Admin alias for settlement disbursement - ADMIN GUARD
-  server.post('/api/admin/settlements/:id/disburse', async (req, reply) => {
+  // Admin: Hold settlement payout - ADMIN GUARD (P1-4)
+  server.post('/api/admin/settlements/:id/hold', async (req, reply) => {
     try {
       const authUser = getAuthenticatedUser(req);
       if (!authUser || authUser.role !== 'admin') {
@@ -1072,59 +1131,41 @@ export function buildPaymentServer() {
       }
 
       const { id } = req.params as { id: string };
-      const parseResult = disburseSettlementSchema.safeParse(req.body);
-      if (!parseResult.success) {
-        return reply.status(400).send({
-          error: 'ValidationError',
-          details: parseResult.error.flatten().fieldErrors,
-        });
+      const { reason } = (req.body as { reason?: string }) || {};
+
+      if (!reason || typeof reason !== 'string' || !reason.trim()) {
+        return reply.status(400).send({ error: 'A valid reason for holding the settlement is required' });
       }
 
-      const { utrReference } = parseResult.data;
-
-      // Production Guard: Verify caterer has registered bank details before allowing disbursement
-      const checkRes = await pgPool.query(
-        `SELECT s.id, s.status, c.id as caterer_id, c.business_name, c.bank_account_number, c.bank_ifsc
-         FROM pay_svc.caterer_settlements s
-         JOIN caterer_svc.caterers c ON s.caterer_id = c.id
-         WHERE s.id = $1`,
+      const cur = await pgPool.query(
+        'SELECT id, status, caterer_id, net_payout_paise FROM pay_svc.caterer_settlements WHERE id = $1',
         [id]
       );
-
-      if (checkRes.rows.length === 0) {
+      if (cur.rows.length === 0) {
         return reply.status(404).send({ error: 'Settlement not found' });
       }
 
-      const settlementInfo = checkRes.rows[0];
-      if (!settlementInfo.bank_account_number || !settlementInfo.bank_ifsc) {
-        return reply.status(422).send({
-          error: `Cannot disburse payout: Caterer '${settlementInfo.business_name}' has not registered bank account details (Account Number & IFSC) yet. Payout held until bank account is registered.`,
-          code: 'BANK_DETAILS_MISSING',
-        });
+      if (cur.rows[0].status === 'settled') {
+        return reply.status(400).send({ error: 'Cannot hold a settlement that has already been settled/disbursed' });
       }
 
       const updateRes = await pgPool.query(
         `UPDATE pay_svc.caterer_settlements
-         SET status = 'settled', utr_reference = $1, settled_at = NOW(), updated_at = NOW()
-         WHERE id = $2 RETURNING *`,
-        [utrReference, id]
+         SET status = 'held', updated_at = NOW()
+         WHERE id = $1 RETURNING *`,
+        [id]
       );
 
-      if (updateRes.rows.length === 0) {
-        return reply.status(404).send({ error: 'Settlement not found' });
-      }
-
-      // Record in audit_svc.admin_audit_logs (P0-27)
       await pgPool.query(
         `INSERT INTO audit_svc.admin_audit_logs (admin_id, action, entity_type, entity_id, details, ip_address)
-         VALUES ($1, 'disburse_settlement', 'settlement', $2, $3, $4)`,
+         VALUES ($1, 'hold_settlement', 'settlement', $2, $3, $4)`,
         [
           authUser.userId,
           id,
           JSON.stringify({
-            utrReference,
-            netPayoutPaise: updateRes.rows[0].net_payout_paise,
-            catererId: updateRes.rows[0].caterer_id,
+            reason: reason.trim(),
+            previousStatus: cur.rows[0].status,
+            netPayoutPaise: cur.rows[0].net_payout_paise,
           }),
           req.ip || null,
         ]
@@ -1133,7 +1174,63 @@ export function buildPaymentServer() {
       return reply.send({ success: true, settlement: updateRes.rows[0] });
     } catch (err: any) {
       req.log.error(err);
-      return reply.status(500).send({ error: 'Failed to disburse settlement' });
+      return reply.status(500).send({ error: 'Failed to hold settlement' });
+    }
+  });
+
+  // Admin: Release settlement payout hold - ADMIN GUARD (P1-4)
+  server.post('/api/admin/settlements/:id/release', async (req, reply) => {
+    try {
+      const authUser = getAuthenticatedUser(req);
+      if (!authUser || authUser.role !== 'admin') {
+        return reply.status(403).send({ error: 'Forbidden: Admin access required' });
+      }
+
+      const { id } = req.params as { id: string };
+      const { notes } = (req.body as { notes?: string }) || {};
+
+      const cur = await pgPool.query(
+        'SELECT id, status, caterer_id, net_payout_paise FROM pay_svc.caterer_settlements WHERE id = $1',
+        [id]
+      );
+      if (cur.rows.length === 0) {
+        return reply.status(404).send({ error: 'Settlement not found' });
+      }
+
+      if (cur.rows[0].status !== 'held') {
+        return reply.status(400).send({ error: `Settlement is not held (current status: ${cur.rows[0].status})` });
+      }
+
+      const netPayout = parseInt(cur.rows[0].net_payout_paise, 10);
+      if (netPayout <= 0) {
+        return reply.status(400).send({ error: 'Cannot release settlement with ₹0 net payout' });
+      }
+
+      const updateRes = await pgPool.query(
+        `UPDATE pay_svc.caterer_settlements
+         SET status = 'pending', updated_at = NOW()
+         WHERE id = $1 RETURNING *`,
+        [id]
+      );
+
+      await pgPool.query(
+        `INSERT INTO audit_svc.admin_audit_logs (admin_id, action, entity_type, entity_id, details, ip_address)
+         VALUES ($1, 'release_settlement', 'settlement', $2, $3, $4)`,
+        [
+          authUser.userId,
+          id,
+          JSON.stringify({
+            notes: notes ? notes.trim() : 'Released by admin',
+            netPayoutPaise: netPayout,
+          }),
+          req.ip || null,
+        ]
+      );
+
+      return reply.send({ success: true, settlement: updateRes.rows[0] });
+    } catch (err: any) {
+      req.log.error(err);
+      return reply.status(500).send({ error: 'Failed to release settlement' });
     }
   });
 

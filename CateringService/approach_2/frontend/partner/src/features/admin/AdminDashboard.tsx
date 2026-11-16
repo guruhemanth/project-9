@@ -24,6 +24,8 @@ import {
   adminIssueRefund,
   fetchAdminSettlements,
   disburseSettlement,
+  holdSettlement,
+  releaseSettlement,
 } from './api';
 import type { PlatformAnalytics, AdminCaterer, CatererSettlement, Booking } from '@caterconnect/shared';
 
@@ -140,6 +142,24 @@ export const AdminDashboard: React.FC = () => {
       await loadAllAdminData(true);
     } catch (err: any) {
       alert(`Disbursal failed: ${err.message}`);
+    }
+  };
+
+  const handleHoldSettlement = async (settlementId: string, reason: string) => {
+    try {
+      await holdSettlement(settlementId, reason);
+      await loadAllAdminData(true);
+    } catch (err: any) {
+      alert(`Failed to hold payout: ${err.message}`);
+    }
+  };
+
+  const handleReleaseSettlement = async (settlementId: string, notes?: string) => {
+    try {
+      await releaseSettlement(settlementId, notes);
+      await loadAllAdminData(true);
+    } catch (err: any) {
+      alert(`Failed to release payout hold: ${err.message}`);
     }
   };
 
@@ -351,6 +371,8 @@ export const AdminDashboard: React.FC = () => {
           settlements={settlements}
           loading={loading}
           onDisburse={handleDisburse}
+          onHold={handleHoldSettlement}
+          onRelease={handleReleaseSettlement}
         />
       )}
 

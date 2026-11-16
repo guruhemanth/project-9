@@ -710,4 +710,110 @@ describe('Payment Service Integration (Dual Options & Webhook)', () => {
     expect(set2.rows[0].net_payout_paise).toBe(0);
     expect(set2.rows[0].status).toBe('held');
   });
+
+  it('P0-11 & P1-4: Enforces settlement release safety gate (blocks future events) and supports admin hold/release', async () => {
+    // 1. Create a caterer with bank details
+    const catererRes = await pgPool.query(
+      `INSERT INTO caterer_svc.caterers (owner_id, business_name, city, status, fssai_number, bank_account_number, bank_ifsc, bank_name, bank_verified)
+       VALUES (gen_random_uuid(), 'P0-11 Caterer', 'Tirupati', 'approved', '12345678901234', '123456789012', 'SBIN0001234', 'State Bank of India', true)
+       RETURNING id`
+    );
+    const catererId = catererRes.rows[0].id;
+
+    // 2. Create a booking in 'paid' status with FUTURE event date (+10 days)
+    const bRes = await pgPool.query(
+      `INSERT INTO order_svc.bookings
+       (customer_id, caterer_id, status, booking_mode, event_date, event_time, venue_address, guest_count, total_amount_paise, amount_paid_paise, balance_due_paise, payment_type)
+       VALUES ($1, $2, 'paid', 'instant', CURRENT_DATE + INTERVAL '10 days', '18:00:00', 'Future Event Hall', 50, 50000, 50000, 0, 'full')
+       RETURNING id`,
+      [testCustomerId, catererId]
+    );
+    const bookingId = bRes.rows[0].id;
+
+    // 3. Create a pending settlement
+    const sRes = await pgPool.query(
+      `INSERT INTO pay_svc.caterer_settlements
+       (booking_id, caterer_id, gross_amount_paise, commission_pct, commission_amount_paise, net_payout_paise, status)
+       VALUES ($1, $2, 50000, 15.00, 7500, 42500, 'pending')
+       RETURNING id`,
+      [bookingId, catererId]
+    );
+    const settlementId = sRes.rows[0].id;
+
+    const adminHeaders = {
+      'x-user-id': 'admin-safety-gate',
+      'x-user-role': 'admin',
+    };
+
+    // 4. Attempt to disburse: must be REJECTED because event is in the future and booking not completed
+    const futureDisburse = await app.inject({
+      method: 'POST',
+      url: `/api/admin/settlements/${settlementId}/disburse`,
+      headers: adminHeaders,
+      payload: { utrReference: 'UTR_FUTURE_BLOCKED' },
+    });
+    expect(futureDisburse.statusCode).toBe(400);
+    expect(futureDisburse.json().code).toBe('EVENT_IN_FUTURE');
+
+    // 5. Admin puts settlement on hold (P1-4)
+    const holdRes = await app.inject({
+      method: 'POST',
+      url: `/api/admin/settlements/${settlementId}/hold`,
+      headers: adminHeaders,
+      payload: { reason: 'Customer reported pre-event complaint' },
+    });
+    expect(holdRes.statusCode).toBe(200);
+    expect(holdRes.json().settlement.status).toBe('held');
+
+    // Verify audit log for hold
+    const holdAudit = await pgPool.query(
+      `SELECT * FROM audit_svc.admin_audit_logs WHERE action = 'hold_settlement' AND entity_id = $1`,
+      [settlementId]
+    );
+    expect(holdAudit.rows.length).toBe(1);
+
+    // 6. Attempt to disburse while held: must return 400 SETTLEMENT_HELD
+    const heldDisburse = await app.inject({
+      method: 'POST',
+      url: `/api/admin/settlements/${settlementId}/disburse`,
+      headers: adminHeaders,
+      payload: { utrReference: 'UTR_HELD_BLOCKED' },
+    });
+    expect(heldDisburse.statusCode).toBe(400);
+    expect(heldDisburse.json().code).toBe('SETTLEMENT_HELD');
+
+    // 7. Admin releases the settlement hold (P1-4)
+    const releaseRes = await app.inject({
+      method: 'POST',
+      url: `/api/admin/settlements/${settlementId}/release`,
+      headers: adminHeaders,
+      payload: { notes: 'Complaint resolved amicably with customer' },
+    });
+    expect(releaseRes.statusCode).toBe(200);
+    expect(releaseRes.json().settlement.status).toBe('pending');
+
+    // Verify audit log for release
+    const releaseAudit = await pgPool.query(
+      `SELECT * FROM audit_svc.admin_audit_logs WHERE action = 'release_settlement' AND entity_id = $1`,
+      [settlementId]
+    );
+    expect(releaseAudit.rows.length).toBe(1);
+
+    // 8. Transition booking to 'completed'
+    await pgPool.query(
+      `UPDATE order_svc.bookings SET status = 'completed', updated_at = NOW() WHERE id = $1`,
+      [bookingId]
+    );
+
+    // 9. Now disbursement must SUCCEED
+    const successDisburse = await app.inject({
+      method: 'POST',
+      url: `/api/admin/settlements/${settlementId}/disburse`,
+      headers: adminHeaders,
+      payload: { utrReference: 'UTR_SUCCESS_COMPLETED' },
+    });
+    expect(successDisburse.statusCode).toBe(200);
+    expect(successDisburse.json().settlement.status).toBe('settled');
+    expect(successDisburse.json().settlement.utr_reference).toBe('UTR_SUCCESS_COMPLETED');
+  });
 });
