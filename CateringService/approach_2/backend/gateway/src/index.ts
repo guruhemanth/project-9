@@ -21,6 +21,7 @@ const PUBLIC_EXACT_ROUTES = new Set([
   '/api/auth/register',
   '/api/auth/login',
   '/api/auth/google',
+  '/api/auth/refresh',
   '/api/payments/webhook',
   '/api/caterers',
   '/api/caterers/cities',

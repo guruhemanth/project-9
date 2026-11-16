@@ -92,6 +92,44 @@ const MIGRATIONS: MigrationDefinition[] = [
       DROP TABLE IF EXISTS notify_svc.push_subscriptions CASCADE;
     `,
   },
+  {
+    name: '11_customizations_schema',
+    upFile: '11_customizations_schema.sql',
+    downSql: `
+      DROP TABLE IF EXISTS caterer_svc.package_menu_items CASCADE;
+      DROP TABLE IF EXISTS caterer_svc.menu_items CASCADE;
+    `,
+  },
+  {
+    name: '12_dish_images_schema',
+    upFile: '12_dish_images_schema.sql',
+    downSql: `
+      ALTER TABLE caterer_svc.menu_items DROP COLUMN IF EXISTS image_url;
+    `,
+  },
+  {
+    name: '13_caterer_bank_details_schema',
+    upFile: '13_caterer_bank_details_schema.sql',
+    downSql: `
+      ALTER TABLE caterer_svc.caterers DROP COLUMN IF EXISTS bank_account_number;
+    `,
+  },
+  {
+    name: '14_instant_booking_and_payment_sync_schema',
+    upFile: '14_instant_booking_and_payment_sync_schema.sql',
+    downSql: `
+      ALTER TABLE caterer_svc.caterers DROP COLUMN IF EXISTS instant_booking_enabled;
+    `,
+  },
+  {
+    name: '15_launch_hardening',
+    upFile: '15_launch_hardening.sql',
+    downSql: `
+      DROP TABLE IF EXISTS pay_svc.webhook_events CASCADE;
+      DROP TABLE IF EXISTS auth_svc.refresh_tokens CASCADE;
+      DROP TABLE IF EXISTS audit_svc.admin_audit_logs CASCADE;
+    `,
+  },
 ];
 
 function getConnectionString(): string {

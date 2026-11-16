@@ -3,6 +3,7 @@ import fastifyCors from '@fastify/cors';
 import fastifyHelmet from '@fastify/helmet';
 import fastifyJwt from '@fastify/jwt';
 import bcrypt from 'bcryptjs';
+import crypto from 'crypto';
 import {
   registerSchema,
   loginSchema,
@@ -42,6 +43,29 @@ export function buildAuthServer() {
     secret: env.JWT_SECRET,
   });
 
+  // Helper to persist cryptographically secure refresh token in family (P0-24)
+  async function createRefreshToken(userId: string, familyId?: string): Promise<string> {
+    const rawRefreshToken = crypto.randomBytes(40).toString('hex');
+    const tokenHash = crypto.createHash('sha256').update(rawRefreshToken).digest('hex');
+    const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000); // 30 days
+
+    if (familyId) {
+      await pgPool.query(
+        `INSERT INTO auth_svc.refresh_tokens (user_id, token_hash, family_id, expires_at)
+         VALUES ($1, $2, $3, $4)`,
+        [userId, tokenHash, familyId, expiresAt]
+      );
+    } else {
+      await pgPool.query(
+        `INSERT INTO auth_svc.refresh_tokens (user_id, token_hash, expires_at)
+         VALUES ($1, $2, $3)`,
+        [userId, tokenHash, expiresAt]
+      );
+    }
+
+    return rawRefreshToken;
+  }
+
   // Health & Readiness checks
   server.get('/health', async () => ({ status: 'ok', service: 'auth-service' }));
   server.get('/ready', async (_req, reply) => {
@@ -71,15 +95,16 @@ export function buildAuthServer() {
     }
 
     const newUser = await createUser({ email, password, fullName, phone, role });
-    const token = server.jwt.sign({
-      sub: newUser.id,
-      role: newUser.role,
-      email,
-    });
+    const token = server.jwt.sign(
+      { sub: newUser.id, role: newUser.role, email },
+      { expiresIn: '15m' }
+    );
+    const refreshToken = await createRefreshToken(newUser.id);
 
     return reply.status(201).send({
       user: newUser,
       token,
+      refreshToken,
     });
   });
 
@@ -102,11 +127,11 @@ export function buildAuthServer() {
         return reply.status(401).send({ error: 'Invalid email or password' });
       }
 
-      const token = server.jwt.sign({
-        sub: user.id,
-        role: user.role,
-        email: user.email,
-      });
+      const token = server.jwt.sign(
+        { sub: user.id, role: user.role, email: user.email },
+        { expiresIn: '15m' }
+      );
+      const refreshToken = await createRefreshToken(user.id);
 
       return reply.send({
         user: {
@@ -117,10 +142,85 @@ export function buildAuthServer() {
           createdAt: user.created_at,
         },
         token,
+        refreshToken,
       });
     } catch (err: any) {
       console.error('LOGIN ERROR DETAILS:', err);
       return reply.status(500).send({ error: err.message || 'Internal Server Error' });
+    }
+  });
+
+  // Refresh Token Rotation with Token Family Reuse Detection (P0-24)
+  server.post('/api/auth/refresh', async (req, reply) => {
+    try {
+      const { refreshToken } = (req.body as any) || {};
+      if (!refreshToken || typeof refreshToken !== 'string') {
+        return reply.status(400).send({ error: 'refreshToken is required' });
+      }
+
+      const tokenHash = crypto.createHash('sha256').update(refreshToken).digest('hex');
+      const tokenRes = await pgPool.query(
+        'SELECT id, user_id, family_id, is_revoked, expires_at FROM auth_svc.refresh_tokens WHERE token_hash = $1',
+        [tokenHash]
+      );
+
+      if (tokenRes.rows.length === 0) {
+        return reply.status(401).send({ error: 'Invalid refresh token' });
+      }
+
+      const record = tokenRes.rows[0];
+
+      // Reuse detection: If a revoked token is used, someone may have stolen it!
+      // Invalidate the ENTIRE token family immediately.
+      if (record.is_revoked) {
+        await pgPool.query(
+          'UPDATE auth_svc.refresh_tokens SET is_revoked = true WHERE family_id = $1',
+          [record.family_id]
+        );
+        return reply.status(401).send({
+          error: 'Refresh token reuse detected. All sessions in this family have been revoked.',
+        });
+      }
+
+      if (new Date() > new Date(record.expires_at)) {
+        return reply.status(401).send({ error: 'Refresh token has expired. Please log in again.' });
+      }
+
+      const userRes = await pgPool.query(
+        'SELECT id, role, email, full_name, phone, created_at FROM auth_svc.users WHERE id = $1',
+        [record.user_id]
+      );
+      if (userRes.rows.length === 0) {
+        return reply.status(401).send({ error: 'User no longer exists' });
+      }
+
+      const user = userRes.rows[0];
+
+      // Rotate: Revoke old token and issue new token in the same family
+      await pgPool.query(
+        'UPDATE auth_svc.refresh_tokens SET is_revoked = true WHERE id = $1',
+        [record.id]
+      );
+
+      const newAccessToken = server.jwt.sign(
+        { sub: user.id, role: user.role, email: user.email },
+        { expiresIn: '15m' }
+      );
+      const newRefreshToken = await createRefreshToken(user.id, record.family_id);
+
+      return reply.send({
+        token: newAccessToken,
+        refreshToken: newRefreshToken,
+        user: {
+          id: user.id,
+          role: user.role,
+          fullName: user.full_name,
+          email: user.email,
+        },
+      });
+    } catch (err: any) {
+      req.log.error(err);
+      return reply.status(500).send({ error: 'Failed to refresh token' });
     }
   });
 

@@ -9,6 +9,7 @@ import fastifyCors from '@fastify/cors';
 import fastifyHelmet from '@fastify/helmet';
 import crypto from 'crypto';
 import Razorpay from 'razorpay';
+import { z } from 'zod';
 import { pgPool } from './db';
 import {
   createOrderSchema,
@@ -243,6 +244,132 @@ export function buildPaymentServer() {
     }
   });
 
+  const createBalanceOrderSchema = z.object({
+    bookingId: z.string().uuid(),
+  });
+
+  // Create Razorpay Order for Remaining Balance Payment (P0-8)
+  server.post('/api/payments/create-balance-order', async (req, reply) => {
+    try {
+      const authUser = getAuthenticatedUser(req);
+      if (!authUser) {
+        return reply.status(401).send({ error: 'Unauthorized: Authentication required' });
+      }
+
+      const parseResult = createBalanceOrderSchema.safeParse(req.body);
+      if (!parseResult.success) {
+        return reply.status(400).send({
+          error: 'ValidationError',
+          details: parseResult.error.flatten().fieldErrors,
+        });
+      }
+
+      const { bookingId } = parseResult.data;
+
+      // Query booking details, balance, and customer ownership
+      const bRes = await pgPool.query(
+        'SELECT id, customer_id, status, total_amount_paise, amount_paid_paise, balance_due_paise, balance_due_date, event_date FROM order_svc.bookings WHERE id = $1',
+        [bookingId]
+      );
+
+      if (bRes.rows.length === 0) {
+        return reply.status(404).send({ error: 'Booking not found' });
+      }
+
+      const booking = bRes.rows[0];
+
+      if (authUser.role !== 'admin' && booking.customer_id !== authUser.userId) {
+        return reply.status(403).send({ error: 'Forbidden: You do not own this booking' });
+      }
+
+      if (booking.status !== 'paid') {
+        return reply.status(400).send({
+          error: `Cannot initiate balance payment for booking in '${booking.status}' status. Initial deposit must be paid first.`,
+        });
+      }
+
+      const balanceDuePaise = booking.balance_due_paise || 0;
+      if (balanceDuePaise <= 0) {
+        return reply.status(400).send({
+          error: 'No balance payment due for this booking. Full amount has already been satisfied.',
+        });
+      }
+
+      // Generate order ID via Razorpay
+      let rzpOrderId = '';
+
+      if (env.NODE_ENV === 'production') {
+        if (!razorpayInstance) {
+          return reply.status(502).send({
+            statusCode: 502,
+            error: 'Bad Gateway',
+            message: 'Razorpay payment client initialization failed.',
+          });
+        }
+        try {
+          const rzpOrder = await razorpayInstance.orders.create({
+            amount: balanceDuePaise,
+            currency: 'INR',
+            receipt: `bal_${bookingId.substring(0, 36)}`,
+            notes: {
+              bookingId,
+              paymentType: 'balance',
+            },
+          });
+          rzpOrderId = rzpOrder.id;
+        } catch (gatewayErr: any) {
+          req.log.error({ gatewayErr }, 'Razorpay balance order creation failed');
+          return reply.status(502).send({
+            statusCode: 502,
+            error: 'Bad Gateway',
+            message: 'Failed to create payment order with payment gateway.',
+          });
+        }
+      } else {
+        if (razorpayInstance && !razorpayKeyId.startsWith('test_rzp') && !process.env.VITEST && env.NODE_ENV !== 'test') {
+          try {
+            const rzpOrder = await razorpayInstance.orders.create({
+              amount: balanceDuePaise,
+              currency: 'INR',
+              receipt: `bal_${bookingId.substring(0, 36)}`,
+              notes: {
+                bookingId,
+                paymentType: 'balance',
+              },
+            });
+            rzpOrderId = rzpOrder.id;
+          } catch {
+            rzpOrderId = `order_bal_${Date.now()}_${Math.random().toString(36).substring(7)}`;
+          }
+        } else {
+          rzpOrderId = `order_bal_${Date.now()}_${Math.random().toString(36).substring(7)}`;
+        }
+      }
+
+      // Record created balance payment in pay_svc.payments
+      const payRes = await pgPool.query(
+        `INSERT INTO pay_svc.payments 
+         (booking_id, razorpay_order_id, amount_paise, currency, status, payment_type)
+         VALUES ($1, $2, $3, 'INR', 'created', 'balance')
+         RETURNING *`,
+        [bookingId, rzpOrderId, balanceDuePaise]
+      );
+
+      return reply.status(201).send({
+        orderId: rzpOrderId,
+        amountPaise: balanceDuePaise,
+        currency: 'INR',
+        paymentType: 'balance',
+        balanceDueDate: booking.balance_due_date,
+        keyId: razorpayKeyId,
+        payment: payRes.rows[0],
+      });
+    } catch (err: any) {
+      req.log.error(err);
+      return reply.status(500).send({ error: 'Failed to initiate balance payment order' });
+    }
+  });
+
   // Shared helper to transition booking to paid, track balance, create initial settlement, and enqueue notifications
   async function processSuccessfulPayment(
     client: any,
@@ -297,7 +424,7 @@ export function buildPaymentServer() {
 
     // Fetch booking with row lock
     const bRes = await client.query(
-      'SELECT id, customer_id, caterer_id, status, total_amount_paise, payment_type FROM order_svc.bookings WHERE id = $1 FOR UPDATE',
+      'SELECT id, customer_id, caterer_id, status, total_amount_paise, amount_paid_paise, balance_due_paise, payment_type, event_date FROM order_svc.bookings WHERE id = $1 FOR UPDATE',
       [bookingId]
     );
 
@@ -310,61 +437,105 @@ export function buildPaymentServer() {
     // CRITICAL: A replayed/duplicate event must NEVER move a completed or cancelled booking back to 'paid'
     if (booking.status !== 'completed' && booking.status !== 'cancelled') {
       const totalAmount = booking.total_amount_paise || 0;
-      const balanceDue = Math.max(0, totalAmount - finalAmountPaise);
 
-      // Update booking to 'paid'
-      await client.query(
-        `UPDATE order_svc.bookings 
-         SET status = 'paid', 
-             amount_paid_paise = $1, 
-             balance_due_paise = $2, 
-             updated_at = NOW()
-         WHERE id = $3`,
-        [finalAmountPaise, balanceDue, bookingId]
-      );
+      // Handle Balance Payment vs Initial Advance/Full Payment
+      if (payRow.payment_type === 'balance') {
+        const updatedAmountPaid = (booking.amount_paid_paise || 0) + finalAmountPaise;
+        const updatedBalanceDue = Math.max(0, (booking.balance_due_paise || 0) - finalAmountPaise);
 
-      // Record in booking audit history
-      await client.query(
-        `INSERT INTO order_svc.booking_status_history (booking_id, from_status, to_status, note)
-         VALUES ($1, $2, 'paid', $3)`,
-        [bookingId, booking.status, `Payment captured via Razorpay ID: ${paymentId}`]
-      );
+        await client.query(
+          `UPDATE order_svc.bookings 
+           SET amount_paid_paise = $1, 
+               balance_due_paise = $2, 
+               updated_at = NOW()
+           WHERE id = $3`,
+          [updatedAmountPaid, updatedBalanceDue, bookingId]
+        );
 
-      // Dynamic Caterer Commission & Settlement Calculation
-      const cRes = await client.query(
-        `SELECT COALESCE(commission_pct, 15.00) as commission_pct FROM caterer_svc.caterers WHERE id = $1`,
-        [booking.caterer_id]
-      );
-      const commissionPct = parseFloat(cRes.rows[0]?.commission_pct || '15.00');
-      // Platform commission is 15% of TOTAL order amount
-      const commissionPaise = Math.round((totalAmount * commissionPct) / 100);
+        await client.query(
+          `INSERT INTO order_svc.booking_status_history (booking_id, from_status, to_status, note)
+           VALUES ($1, $2, 'paid', $3)`,
+          [bookingId, booking.status, `Balance payment captured via Razorpay ID: ${paymentId}`]
+        );
 
-      let netPayoutPaise = 0;
-      const grossCollectedPaise = finalAmountPaise;
+        // Update settlement gross and net payout to full total order amounts
+        const cRes = await client.query(
+          `SELECT COALESCE(commission_pct, 15.00) as commission_pct FROM caterer_svc.caterers WHERE id = $1`,
+          [booking.caterer_id]
+        );
+        const commissionPct = parseFloat(cRes.rows[0]?.commission_pct || '15.00');
+        const commissionPaise = Math.round((totalAmount * commissionPct) / 100);
+        const netPayoutPaise = Math.max(0, totalAmount - commissionPaise);
 
-      if (payRow.payment_type === 'advance' || booking.payment_type === 'advance') {
-        // Upfront 25% advance:
-        // Platform retains full 15% commission of total order from advance.
-        // Caterer receives remaining upfront cash (paidAmount - commissionPaise) = 10% of total order.
-        netPayoutPaise = Math.max(0, finalAmountPaise - commissionPaise);
+        await client.query(
+          `UPDATE pay_svc.caterer_settlements
+           SET gross_amount_paise = $1,
+               commission_pct = $2,
+               commission_amount_paise = $3,
+               net_payout_paise = $4,
+               updated_at = NOW()
+           WHERE booking_id = $5`,
+          [totalAmount, commissionPct, commissionPaise, netPayoutPaise, booking.id]
+        );
       } else {
-        // Full 100% payment:
-        // Platform keeps 15%, caterer receives 85% of total order upon completion.
-        netPayoutPaise = Math.max(0, totalAmount - commissionPaise);
-      }
+        // Initial Advance or Full Payment
+        const balanceDue = Math.max(0, totalAmount - finalAmountPaise);
+        const isAdvance = payRow.payment_type === 'advance' || booking.payment_type === 'advance';
 
-      await client.query(
-        `INSERT INTO pay_svc.caterer_settlements
-         (booking_id, caterer_id, gross_amount_paise, commission_pct, commission_amount_paise, net_payout_paise, status)
-         VALUES ($1, $2, $3, $4, $5, $6, 'pending')
-         ON CONFLICT (booking_id) DO UPDATE 
-         SET gross_amount_paise = EXCLUDED.gross_amount_paise,
-             commission_pct = EXCLUDED.commission_pct,
-             commission_amount_paise = EXCLUDED.commission_amount_paise,
-             net_payout_paise = EXCLUDED.net_payout_paise,
-             updated_at = NOW()`,
-        [booking.id, booking.caterer_id, grossCollectedPaise, commissionPct, commissionPaise, netPayoutPaise]
-      );
+        await client.query(
+          `UPDATE order_svc.bookings 
+           SET status = 'paid', 
+               amount_paid_paise = $1, 
+               balance_due_paise = $2, 
+               advance_paid_at = NOW(),
+               balance_due_date = (CASE WHEN $4 = true THEN event_date - INTERVAL '2 days' ELSE NULL END),
+               updated_at = NOW()
+           WHERE id = $3`,
+          [finalAmountPaise, balanceDue, bookingId, isAdvance]
+        );
+
+        // Record in booking audit history
+        await client.query(
+          `INSERT INTO order_svc.booking_status_history (booking_id, from_status, to_status, note)
+           VALUES ($1, $2, 'paid', $3)`,
+          [bookingId, booking.status, `Payment captured via Razorpay ID: ${paymentId}`]
+        );
+
+        // Dynamic Caterer Commission & Settlement Calculation
+        const cRes = await client.query(
+          `SELECT COALESCE(commission_pct, 15.00) as commission_pct FROM caterer_svc.caterers WHERE id = $1`,
+          [booking.caterer_id]
+        );
+        const commissionPct = parseFloat(cRes.rows[0]?.commission_pct || '15.00');
+        const commissionPaise = Math.round((totalAmount * commissionPct) / 100);
+
+        let netPayoutPaise = 0;
+        const grossCollectedPaise = finalAmountPaise;
+
+        if (isAdvance) {
+          // Upfront 25% advance:
+          // Platform retains full 15% commission of total order from advance.
+          // Caterer receives remaining upfront cash (paidAmount - commissionPaise) = 10% of total order.
+          netPayoutPaise = Math.max(0, finalAmountPaise - commissionPaise);
+        } else {
+          // Full 100% payment:
+          // Platform keeps 15%, caterer receives 85% of total order upon completion.
+          netPayoutPaise = Math.max(0, totalAmount - commissionPaise);
+        }
+
+        await client.query(
+          `INSERT INTO pay_svc.caterer_settlements
+           (booking_id, caterer_id, gross_amount_paise, commission_pct, commission_amount_paise, net_payout_paise, status)
+           VALUES ($1, $2, $3, $4, $5, $6, 'pending')
+           ON CONFLICT (booking_id) DO UPDATE 
+           SET gross_amount_paise = EXCLUDED.gross_amount_paise,
+               commission_pct = EXCLUDED.commission_pct,
+               commission_amount_paise = EXCLUDED.commission_amount_paise,
+               net_payout_paise = EXCLUDED.net_payout_paise,
+               updated_at = NOW()`,
+          [booking.id, booking.caterer_id, grossCollectedPaise, commissionPct, commissionPaise, netPayoutPaise]
+        );
+      }
 
       // Enqueue Outbox notification: booking_paid / payment_captured -> both parties
       const bDetails = await client.query(
@@ -385,7 +556,7 @@ export function buildPaymentServer() {
             catererName: bd.business_name,
             eventDate: bd.event_date,
             amountPaidINR: `₹${(finalAmountPaise / 100).toLocaleString('en-IN')}`,
-            balanceDueINR: `₹${(balanceDue / 100).toLocaleString('en-IN')}`,
+            paymentType: payRow.payment_type || 'full',
           },
           client
         );
@@ -485,13 +656,33 @@ export function buildPaymentServer() {
       }
 
       const event = typeof req.body === 'string' ? JSON.parse(req.body) : req.body;
+      const paymentEntity = event.payload?.payment?.entity;
+      const orderId = paymentEntity?.order_id;
+      const paymentId = paymentEntity?.id;
+      const amountPaise = paymentEntity?.amount;
+      const eventId = event.id || (paymentId ? `evt_${paymentId}_${event.event}` : `evt_${Date.now()}_${Math.random().toString(36).substring(7)}`);
+      const eventType = event.event || 'unknown';
+      const entityId = paymentId || orderId || null;
+
+      // 1. Check idempotency in dedicated webhook_events table (P0-4, P1-5)
+      const existingEv = await pgPool.query(
+        'SELECT status FROM pay_svc.webhook_events WHERE event_id = $1',
+        [eventId]
+      );
+      if (existingEv.rows.length > 0 && existingEv.rows[0].status === 'processed') {
+        return reply.send({ received: true, idempotent: true, eventId });
+      }
+
+      // Record in webhook_events as processing or increment attempt count
+      await pgPool.query(
+        `INSERT INTO pay_svc.webhook_events (event_id, event_type, entity_id, payload, status)
+         VALUES ($1, $2, $3, $4, 'processing')
+         ON CONFLICT (event_id) DO UPDATE 
+         SET attempts = pay_svc.webhook_events.attempts + 1`,
+        [eventId, eventType, entityId, JSON.stringify(event)]
+      );
 
       if (event.event === 'order.paid' || event.event === 'payment.captured') {
-        const paymentEntity = event.payload?.payment?.entity;
-        const orderId = paymentEntity?.order_id;
-        const paymentId = paymentEntity?.id;
-        const amountPaise = paymentEntity?.amount;
-
         if (orderId) {
           const client = await pgPool.connect();
           try {
@@ -502,13 +693,27 @@ export function buildPaymentServer() {
             if (result.error) {
               req.log.warn({ result }, 'Webhook payment processing failed');
               await client.query('ROLLBACK');
+              await pgPool.query(
+                `UPDATE pay_svc.webhook_events SET status = 'failed', error_message = $1 WHERE event_id = $2`,
+                [result.error, eventId]
+              );
               return reply.status(result.statusCode || 400).send({ error: result.error });
             }
 
             await client.query('COMMIT');
-            return reply.send({ received: true, idempotent: result.idempotent || false });
-          } catch (txErr) {
+
+            await pgPool.query(
+              `UPDATE pay_svc.webhook_events SET status = 'processed', processed_at = NOW() WHERE event_id = $1`,
+              [eventId]
+            );
+
+            return reply.send({ received: true, idempotent: result.idempotent || false, eventId });
+          } catch (txErr: any) {
             await client.query('ROLLBACK');
+            await pgPool.query(
+              `UPDATE pay_svc.webhook_events SET status = 'failed', error_message = $1 WHERE event_id = $2`,
+              [txErr?.message || 'Transaction error', eventId]
+            );
             throw txErr;
           } finally {
             client.release();
@@ -516,7 +721,11 @@ export function buildPaymentServer() {
         }
       }
 
-      return reply.send({ received: true });
+      await pgPool.query(
+        `UPDATE pay_svc.webhook_events SET status = 'ignored', processed_at = NOW() WHERE event_id = $1`,
+        [eventId]
+      );
+      return reply.send({ received: true, ignored: true, eventId });
     } catch (err: any) {
       req.log.error(err);
       return reply.status(500).send({ error: 'Failed to process payment webhook' });
@@ -705,6 +914,22 @@ export function buildPaymentServer() {
         return reply.status(404).send({ error: 'Settlement not found' });
       }
 
+      // Record in audit_svc.admin_audit_logs (P0-27)
+      await pgPool.query(
+        `INSERT INTO audit_svc.admin_audit_logs (admin_id, action, entity_type, entity_id, details, ip_address)
+         VALUES ($1, 'disburse_settlement', 'settlement', $2, $3, $4)`,
+        [
+          authUser.userId,
+          id,
+          JSON.stringify({
+            utrReference,
+            netPayoutPaise: updateRes.rows[0].net_payout_paise,
+            catererId: updateRes.rows[0].caterer_id,
+          }),
+          req.ip || null,
+        ]
+      );
+
       return reply.send({ settlement: updateRes.rows[0] });
     } catch (err: any) {
       req.log.error(err);
@@ -888,6 +1113,22 @@ export function buildPaymentServer() {
       if (updateRes.rows.length === 0) {
         return reply.status(404).send({ error: 'Settlement not found' });
       }
+
+      // Record in audit_svc.admin_audit_logs (P0-27)
+      await pgPool.query(
+        `INSERT INTO audit_svc.admin_audit_logs (admin_id, action, entity_type, entity_id, details, ip_address)
+         VALUES ($1, 'disburse_settlement', 'settlement', $2, $3, $4)`,
+        [
+          authUser.userId,
+          id,
+          JSON.stringify({
+            utrReference,
+            netPayoutPaise: updateRes.rows[0].net_payout_paise,
+            catererId: updateRes.rows[0].caterer_id,
+          }),
+          req.ip || null,
+        ]
+      );
 
       return reply.send({ success: true, settlement: updateRes.rows[0] });
     } catch (err: any) {

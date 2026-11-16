@@ -162,7 +162,7 @@ export function buildBookingServer() {
 
       // Verify caterer existence, approval status, service area, and rules
       const catRuleRes = await pgPool.query(
-        'SELECT status, min_guests, max_guests, business_name, lead_time_days, city, service_areas, instant_booking_enabled FROM caterer_svc.caterers WHERE id = $1',
+        'SELECT status, min_guests, max_guests, business_name, lead_time_days, city, service_areas, instant_booking_enabled, COALESCE(commission_pct, 15.00) as commission_pct FROM caterer_svc.caterers WHERE id = $1',
         [catererId]
       );
 
@@ -283,10 +283,14 @@ export function buildBookingServer() {
       const isInstant = caterer.instant_booking_enabled === true;
       const bookingMode = isInstant ? 'instant' : 'on_request';
 
+      // Snapshot commission percentage and calculate commission paise at creation time (P0-9)
+      const commissionPct = parseFloat(caterer.commission_pct || '15.00');
+      const commissionAmountPaise = Math.round((totalAmountPaise * commissionPct) / 100);
+
       const insertRes = await pgPool.query(
         `INSERT INTO order_svc.bookings 
-         (customer_id, caterer_id, package_id, event_date, event_time, guest_count, venue_address, city, state, pincode, special_requests, total_amount_paise, customized_items, custom_combo_name, status, booking_mode)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, 'requested', $15)
+         (customer_id, caterer_id, package_id, event_date, event_time, guest_count, venue_address, city, state, pincode, special_requests, total_amount_paise, customized_items, custom_combo_name, status, booking_mode, commission_pct, commission_amount_paise)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, 'requested', $15, $16, $17)
          RETURNING *`,
         [
           customerId,
@@ -304,6 +308,8 @@ export function buildBookingServer() {
           JSON.stringify(effectiveCustomizedItems),
           customComboName || (packageId ? null : 'Custom Feast Combo'),
           bookingMode,
+          commissionPct,
+          commissionAmountPaise,
         ]
       );
 
@@ -480,28 +486,38 @@ export function buildBookingServer() {
 
       const { caterer_id, event_date } = booking;
 
-      // Auto-lock the date in caterer_availability
-      await pgPool.query(
+      // Auto-lock the date in caterer_availability atomically (P0-16)
+      // If another booking already committed/locked this date, reject with 409 Conflict
+      const lockRes = await pgPool.query(
         `INSERT INTO caterer_svc.caterer_availability (caterer_id, unavailable_date, reason, auto_locked, booking_id)
          VALUES ($1, $2, 'Booked via CaterConnect', TRUE, $3)
          ON CONFLICT (caterer_id, unavailable_date)
-         DO UPDATE SET auto_locked = TRUE, booking_id = EXCLUDED.booking_id, reason = 'Booked via CaterConnect'`,
+         DO UPDATE SET auto_locked = TRUE, booking_id = EXCLUDED.booking_id, reason = 'Booked via CaterConnect'
+         WHERE caterer_svc.caterer_availability.booking_id IS NULL OR caterer_svc.caterer_availability.booking_id = EXCLUDED.booking_id
+         RETURNING *`,
         [caterer_id, event_date, id]
       );
 
+      if (lockRes.rows.length === 0) {
+        return reply.status(409).send({
+          error: 'Caterer is already committed to another booking on this date.',
+        });
+      }
+
       const totalPaise = booking.total_amount_paise || 0;
-      const commissionPaise = Math.round(totalPaise * 0.15);
+      const commissionPct = parseFloat(booking.commission_pct || '15.00');
+      const commissionPaise = booking.commission_amount_paise || Math.round((totalPaise * commissionPct) / 100);
 
       const updateRes = await pgPool.query(
         `UPDATE order_svc.bookings 
          SET status = 'accepted', 
-             commission_pct = 15.00, 
-             commission_amount_paise = $1,
-             caterer_note = $2,
+             commission_pct = $1, 
+             commission_amount_paise = $2,
+             caterer_note = $3,
              payment_deadline = NOW() + INTERVAL '12 hours',
              updated_at = NOW()
-         WHERE id = $3 RETURNING *`,
-        [commissionPaise, catererNote, id]
+         WHERE id = $4 RETURNING *`,
+        [commissionPct, commissionPaise, catererNote, id]
       );
 
       await pgPool.query(

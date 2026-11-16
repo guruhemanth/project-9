@@ -520,6 +520,19 @@ export function buildCatererServer() {
       return reply.status(404).send({ error: 'Caterer not found' });
     }
 
+    // Record in audit_svc.admin_audit_logs (P0-27)
+    await pgPool.query(
+      `INSERT INTO audit_svc.admin_audit_logs (admin_id, action, entity_type, entity_id, details, ip_address)
+       VALUES ($1, $2, 'caterer', $3, $4, $5)`,
+      [
+        authUser.userId,
+        `caterer_${status}`,
+        id,
+        JSON.stringify({ newStatus: status, rejectionReason: rejectionReason || null }),
+        req.ip || null,
+      ]
+    );
+
     return reply.send({
       caterer: {
         id: updateRes.rows[0].id,
@@ -683,6 +696,18 @@ export function buildCatererServer() {
     if (updateRes.rows.length === 0) {
       return reply.status(404).send({ error: 'Caterer not found' });
     }
+
+    // Record in audit_svc.admin_audit_logs (P0-27)
+    await pgPool.query(
+      `INSERT INTO audit_svc.admin_audit_logs (admin_id, action, entity_type, entity_id, details, ip_address)
+       VALUES ($1, 'update_commission_rate', 'caterer', $2, $3, $4)`,
+      [
+        authUser.userId,
+        id,
+        JSON.stringify({ commissionPct: rate }),
+        req.ip || null,
+      ]
+    );
 
     return reply.send({
       caterer: {

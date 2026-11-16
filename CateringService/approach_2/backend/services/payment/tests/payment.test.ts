@@ -6,7 +6,10 @@ import { pgPool } from '../src/db';
 
 describe('Payment Service Integration (Dual Options & Webhook)', () => {
   const app = buildPaymentServer();
+  const testCustomerId = 'c0000000-0000-0000-0000-000000000001';
+  const testCatererId = 'd0000000-0000-0000-0000-000000000001';
   const testBookingId = 'f0000000-0000-0000-0000-000000000001';
+  const webhookSecret = process.env.RAZORPAY_WEBHOOK_SECRET || 'test_webhook_secret_vitest_hmac';
   let createdOrderId = '';
 
   beforeAll(async () => {
@@ -203,6 +206,15 @@ describe('Payment Service Integration (Dual Options & Webhook)', () => {
     expect(disburseRes.statusCode).toBe(200);
     expect(disburseRes.json().settlement.status).toBe('settled');
     expect(disburseRes.json().settlement.utr_reference).toBe('UTR_HDFC_20261104_998877');
+
+    // Verify P0-27: Admin audit log entry was created
+    const auditRes = await pgPool.query(
+      `SELECT * FROM audit_svc.admin_audit_logs WHERE action = 'disburse_settlement' AND entity_id = $1`,
+      [settlement.id]
+    );
+    expect(auditRes.rows.length).toBeGreaterThanOrEqual(1);
+    expect(auditRes.rows[0].admin_id).toBe('admin-uuid-0001');
+    expect(auditRes.rows[0].details.utrReference).toBe('UTR_HDFC_20261104_998877');
   });
 
   it('allows admin to query platform analytics and list settlements', async () => {
@@ -425,5 +437,160 @@ describe('Payment Service Integration (Dual Options & Webhook)', () => {
     );
     expect(refundCheck.rows[0].refund_id).toBeTruthy();
     expect(refundCheck.rows[0].refund_amount_paise).toBe(25000);
+  });
+
+  it('P0-4 & P1-5: Webhook idempotency and dead-lettering in pay_svc.webhook_events', async () => {
+    // 1. Create a fresh booking & payment
+    const bRes = await pgPool.query(
+      `INSERT INTO order_svc.bookings
+       (customer_id, caterer_id, status, booking_mode, event_date, event_time, venue_address, guest_count, total_amount_paise, payment_type)
+       VALUES ($1, $2, 'accepted', 'instant', CURRENT_DATE + INTERVAL '10 days', '18:00:00', '123 Main Road, Tirupati', 50, 50000, 'full')
+       RETURNING id`,
+      [testCustomerId, testCatererId]
+    );
+    const bookingId = bRes.rows[0].id;
+
+    const rzpOrderId = `order_evt_test_${Date.now()}`;
+    await pgPool.query(
+      `INSERT INTO pay_svc.payments (booking_id, razorpay_order_id, amount_paise, currency, status, payment_type)
+       VALUES ($1, $2, 50000, 'INR', 'created', 'full')`,
+      [bookingId, rzpOrderId]
+    );
+
+    const testEventId = `evt_idemp_${Date.now()}`;
+    const webhookPayload = {
+      id: testEventId,
+      event: 'payment.captured',
+      payload: {
+        payment: {
+          entity: {
+            id: `pay_${Date.now()}`,
+            order_id: rzpOrderId,
+            amount: 50000,
+            currency: 'INR',
+          },
+        },
+      },
+    };
+    const bodyStr = JSON.stringify(webhookPayload);
+    const signature = crypto.createHmac('sha256', webhookSecret).update(bodyStr).digest('hex');
+
+    // First webhook call: should process and commit
+    const res1 = await app.inject({
+      method: 'POST',
+      url: '/api/payments/webhook',
+      headers: {
+        'x-razorpay-signature': signature,
+        'content-type': 'application/json',
+      },
+      payload: bodyStr,
+    });
+    expect(res1.statusCode).toBe(200);
+    expect(res1.json().received).toBe(true);
+
+    // Verify webhook_events row
+    const evCheck1 = await pgPool.query(
+      'SELECT status, attempts FROM pay_svc.webhook_events WHERE event_id = $1',
+      [testEventId]
+    );
+    expect(evCheck1.rows.length).toBe(1);
+    expect(evCheck1.rows[0].status).toBe('processed');
+
+    // Replay webhook call with exact same event ID: should return idempotent immediately
+    const res2 = await app.inject({
+      method: 'POST',
+      url: '/api/payments/webhook',
+      headers: {
+        'x-razorpay-signature': signature,
+        'content-type': 'application/json',
+      },
+      payload: bodyStr,
+    });
+    expect(res2.statusCode).toBe(200);
+    expect(res2.json().idempotent).toBe(true);
+  });
+
+  it('P0-8: Balance payment order creation and webhook settlement finalization', async () => {
+    // 1. Create booking in 'paid' status with remaining balance
+    const bRes = await pgPool.query(
+      `INSERT INTO order_svc.bookings
+       (customer_id, caterer_id, status, booking_mode, event_date, event_time, venue_address, guest_count, total_amount_paise, amount_paid_paise, balance_due_paise, payment_type, advance_pct, advance_paid_at, balance_due_date)
+       VALUES ($1, $2, 'paid', 'on_request', CURRENT_DATE + INTERVAL '7 days', '18:00:00', '123 Main Road, Tirupati', 50, 100000, 25000, 75000, 'advance', 25, NOW(), CURRENT_DATE + INTERVAL '5 days')
+       RETURNING id`,
+      [testCustomerId, testCatererId]
+    );
+    const bookingId = bRes.rows[0].id;
+
+    // Initial partial settlement entry
+    await pgPool.query(
+      `INSERT INTO pay_svc.caterer_settlements
+       (booking_id, caterer_id, gross_amount_paise, commission_pct, commission_amount_paise, net_payout_paise, status)
+       VALUES ($1, $2, 25000, 15.00, 15000, 10000, 'pending')`,
+      [bookingId, testCatererId]
+    );
+
+    // 2. Customer creates balance payment order
+    const balOrderRes = await app.inject({
+      method: 'POST',
+      url: '/api/payments/create-balance-order',
+      headers: {
+        'x-user-id': testCustomerId,
+        'x-user-role': 'customer',
+      },
+      payload: { bookingId },
+    });
+    expect(balOrderRes.statusCode).toBe(201);
+    const balOrder = balOrderRes.json();
+    expect(balOrder.amountPaise).toBe(75000);
+    expect(balOrder.paymentType).toBe('balance');
+    expect(balOrder.orderId).toBeTruthy();
+
+    // 3. Webhook arrives for balance payment capture
+    const balPaymentId = `pay_bal_${Date.now()}`;
+    const balWebhookPayload = {
+      id: `evt_bal_${Date.now()}`,
+      event: 'payment.captured',
+      payload: {
+        payment: {
+          entity: {
+            id: balPaymentId,
+            order_id: balOrder.orderId,
+            amount: 75000,
+            currency: 'INR',
+          },
+        },
+      },
+    };
+    const bodyStr = JSON.stringify(balWebhookPayload);
+    const signature = crypto.createHmac('sha256', webhookSecret).update(bodyStr).digest('hex');
+
+    const webhookRes = await app.inject({
+      method: 'POST',
+      url: '/api/payments/webhook',
+      headers: {
+        'x-razorpay-signature': signature,
+        'content-type': 'application/json',
+      },
+      payload: bodyStr,
+    });
+    expect(webhookRes.statusCode).toBe(200);
+
+    // 4. Verify booking has zero balance due and amount_paid is 100,000 paise
+    const bCheck = await pgPool.query(
+      'SELECT status, amount_paid_paise, balance_due_paise FROM order_svc.bookings WHERE id = $1',
+      [bookingId]
+    );
+    expect(bCheck.rows[0].status).toBe('paid');
+    expect(bCheck.rows[0].amount_paid_paise).toBe(100000);
+    expect(bCheck.rows[0].balance_due_paise).toBe(0);
+
+    // 5. Verify settlement updated to full order totals
+    const sCheck = await pgPool.query(
+      'SELECT * FROM pay_svc.caterer_settlements WHERE booking_id = $1',
+      [bookingId]
+    );
+    expect(sCheck.rows[0].gross_amount_paise).toBe(100000);
+    expect(sCheck.rows[0].commission_amount_paise).toBe(15000);
+    expect(sCheck.rows[0].net_payout_paise).toBe(85000);
   });
 });

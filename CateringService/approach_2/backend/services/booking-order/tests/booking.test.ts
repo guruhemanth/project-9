@@ -333,4 +333,145 @@ describe('Booking & Order Service Integration', () => {
     expect(bPaid.customer_phone).not.toContain('•');
     expect(bPaid.customer_email).not.toContain('•••••');
   });
+
+  it('enforces P0-9: commission percentage and paise are snapshotted on booking creation', async () => {
+    const catererId = 'd0000000-0000-0000-0000-000000000001';
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/bookings',
+      headers: { 'x-user-id': 'c0000000-0000-0000-0000-000000000001', 'x-user-role': 'customer' },
+      payload: {
+        catererId,
+        packageId: 'e0000000-0000-0000-0000-000000000001',
+        eventDate: '2026-12-29',
+        eventTime: '17:00:00',
+        guestCount: 100,
+        venueAddress: 'Commission Snapshot Hall, Tirupati',
+        city: 'Tirupati',
+      },
+    });
+
+    expect(res.statusCode).toBe(201);
+    const booking = res.json().booking;
+    expect(parseFloat(booking.commission_pct)).toBe(15.00);
+    expect(booking.commission_amount_paise).toBeGreaterThan(0);
+    // 100 guests * 50,000 paise (500 INR) = 5,000,000 paise. 15% = 750,000 paise
+    expect(booking.commission_amount_paise).toBe(Math.round(booking.total_amount_paise * 0.15));
+  });
+
+  it('enforces P0-16: concurrent accept requests for the same date prevent double-booking', async () => {
+    const catererId = 'd0000000-0000-0000-0000-000000000001';
+    const catererHeaders = {
+      'x-user-id': 'c0000000-0000-0000-0000-000000000002',
+      'x-user-role': 'caterer',
+    };
+    const targetDate = '2026-12-30';
+
+    // Ensure slot is free
+    await pgPool.query(
+      'DELETE FROM caterer_svc.caterer_availability WHERE caterer_id = $1 AND unavailable_date = $2',
+      [catererId, targetDate]
+    );
+
+    // Create 2 separate booking requests for the same date
+    const b1Res = await app.inject({
+      method: 'POST',
+      url: '/api/bookings',
+      headers: { 'x-user-id': 'c0000000-0000-0000-0000-000000000001', 'x-user-role': 'customer' },
+      payload: {
+        catererId,
+        packageId: 'e0000000-0000-0000-0000-000000000001',
+        eventDate: targetDate,
+        eventTime: '12:00:00',
+        guestCount: 50,
+        venueAddress: 'Race Test 1, Tirupati',
+        city: 'Tirupati',
+      },
+    });
+    const b1Id = b1Res.json().booking.id;
+
+    const b2Res = await app.inject({
+      method: 'POST',
+      url: '/api/bookings',
+      headers: { 'x-user-id': 'c0000000-0000-0000-0000-000000000001', 'x-user-role': 'customer' },
+      payload: {
+        catererId,
+        packageId: 'e0000000-0000-0000-0000-000000000001',
+        eventDate: targetDate,
+        eventTime: '18:00:00',
+        guestCount: 60,
+        venueAddress: 'Race Test 2, Tirupati',
+        city: 'Tirupati',
+      },
+    });
+    const b2Id = b2Res.json().booking.id;
+
+    // Concurrently try to accept both bookings for the same caterer on the same date
+    const [accept1, accept2] = await Promise.all([
+      app.inject({
+        method: 'POST',
+        url: `/api/bookings/${b1Id}/accept`,
+        headers: catererHeaders,
+        payload: { catererNote: 'Accepting B1' },
+      }),
+      app.inject({
+        method: 'POST',
+        url: `/api/bookings/${b2Id}/accept`,
+        headers: catererHeaders,
+        payload: { catererNote: 'Accepting B2' },
+      }),
+    ]);
+
+    const statusCodes = [accept1.statusCode, accept2.statusCode].sort();
+    // Exactly one should succeed with 200, the other rejected with 409 Conflict
+    expect(statusCodes).toEqual([200, 409]);
+  });
+
+  it('enforces P0-13: checkAndExpireBookings sweep expires unpaid bookings and releases availability slot', async () => {
+    const catererId = 'd0000000-0000-0000-0000-000000000001';
+    const expiredDate = '2026-12-31';
+
+    // Insert an accepted booking whose payment_deadline has elapsed
+    const bRes = await pgPool.query(
+      `INSERT INTO order_svc.bookings
+       (customer_id, caterer_id, status, booking_mode, event_date, event_time, venue_address, guest_count, total_amount_paise, payment_deadline)
+       VALUES ('c0000000-0000-0000-0000-000000000001', $1, 'accepted', 'on_request', $2, '18:00:00', 'Expiry Test Hall', 50, 50000, NOW() - INTERVAL '1 hour')
+       RETURNING id`,
+      [catererId, expiredDate]
+    );
+    const expiredBookingId = bRes.rows[0].id;
+
+    // Add auto-locked date in availability
+    await pgPool.query(
+      `INSERT INTO caterer_svc.caterer_availability (caterer_id, unavailable_date, reason, auto_locked, booking_id)
+       VALUES ($1, $2, 'Booked via CaterConnect', TRUE, $3)
+       ON CONFLICT (caterer_id, unavailable_date) DO UPDATE SET auto_locked = TRUE, booking_id = EXCLUDED.booking_id`,
+      [catererId, expiredDate, expiredBookingId]
+    );
+
+    // Trigger sweep via GET /api/bookings/customer
+    await app.inject({
+      method: 'GET',
+      url: '/api/bookings/customer',
+      headers: {
+        'x-user-id': 'c0000000-0000-0000-0000-000000000001',
+        'x-user-role': 'customer',
+      },
+    });
+
+    // Verify booking is now marked 'expired'
+    const bCheck = await pgPool.query(
+      'SELECT status FROM order_svc.bookings WHERE id = $1',
+      [expiredBookingId]
+    );
+    expect(bCheck.rows[0].status).toBe('expired');
+
+    // Verify availability slot was unlocked
+    const slotCheck = await pgPool.query(
+      'SELECT * FROM caterer_svc.caterer_availability WHERE caterer_id = $1 AND unavailable_date = $2',
+      [catererId, expiredDate]
+    );
+    expect(slotCheck.rows.length).toBe(0);
+  });
 });
