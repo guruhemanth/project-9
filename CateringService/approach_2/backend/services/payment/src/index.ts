@@ -24,6 +24,10 @@ import {
   verifyInternalToken,
 } from '@caterconnect/shared';
 import { enqueueOutboxNotification } from './outbox';
+import { sendPaymentAlertWebhook } from './alerts';
+import { generateInvoiceAndTaxRecords } from './invoicing';
+import { registerPayoutRoutes } from './payout';
+import { registerReconciliationRoutes } from './reconciliation';
 
 export function buildPaymentServer() {
   const env = validateEnv(createPaymentEnvSchema(), process.env);
@@ -101,11 +105,11 @@ export function buildPaymentServer() {
         });
       }
 
-      const { bookingId, paymentOption, advancePct } = parseResult.data;
+      const { bookingId, paymentOption, advancePct, trancheAmountPaise } = parseResult.data;
 
-      // Query booking details, mode, deadline, and ownership
+      // Query booking details, mode, deadline, ownership, and amounts
       const bRes = await pgPool.query(
-        'SELECT id, customer_id, status, total_amount_paise, booking_mode, payment_deadline FROM order_svc.bookings WHERE id = $1',
+        'SELECT id, customer_id, caterer_id, status, total_amount_paise, amount_paid_paise, balance_due_paise, booking_mode, payment_deadline FROM order_svc.bookings WHERE id = $1',
         [bookingId]
       );
 
@@ -120,42 +124,62 @@ export function buildPaymentServer() {
         return reply.status(403).send({ error: 'Forbidden: You do not own this booking' });
       }
 
+      const totalPaise = booking.total_amount_paise || 0;
+      const amountPaidPaise = booking.amount_paid_paise || 0;
+      const balanceDuePaise = (booking.balance_due_paise != null && booking.balance_due_paise > 0)
+        ? booking.balance_due_paise
+        : Math.max(0, totalPaise - amountPaidPaise);
+
+      let orderAmountPaise = 0;
+      let pct = 100;
+
+      // 1. Universal booking lifecycle validation across ALL payment options (advance, full, split)
       const bookingMode = booking.booking_mode || 'on_request';
       if (bookingMode === 'on_request') {
         if (booking.status === 'requested') {
           return reply.status(400).send({
-            error: 'This booking is pending caterer review. You can pay the 25% advance once the caterer accepts your request.',
+            error: 'This booking is pending caterer review. You can pay once the caterer accepts your request.',
           });
         }
-        if (booking.status !== 'accepted') {
+        if (booking.status !== 'accepted' && booking.status !== 'paid') {
           return reply.status(400).send({
             error: `Cannot initiate payment for booking in '${booking.status}' status. Must be 'accepted'.`,
           });
         }
-        if (booking.payment_deadline && new Date() > new Date(booking.payment_deadline)) {
+        if (booking.status === 'accepted' && booking.payment_deadline && new Date() > new Date(booking.payment_deadline)) {
           return reply.status(400).send({
             error: 'The 12-hour payment window for this booking has expired. Please submit a new booking request.',
           });
         }
       } else {
         // Instant Booking mode
-        if (booking.status !== 'accepted' && booking.status !== 'requested') {
+        if (booking.status !== 'accepted' && booking.status !== 'requested' && booking.status !== 'paid') {
           return reply.status(400).send({
             error: `Cannot initiate payment for booking in '${booking.status}' status.`,
           });
         }
       }
 
-      const totalPaise = booking.total_amount_paise;
-      let orderAmountPaise = 0;
-      let pct = 100;
-
-      if (paymentOption === 'advance') {
+      // 2. Option-specific amount & percentage calculation
+      if (paymentOption === 'split') {
+        if (!trancheAmountPaise || trancheAmountPaise < 500000) {
+          return reply.status(400).send({
+            error: 'Minimum split tranche amount is ₹5,000 (500,000 paise)',
+          });
+        }
+        if (trancheAmountPaise > balanceDuePaise) {
+          return reply.status(400).send({
+            error: 'Tranche amount cannot exceed remaining balance due',
+          });
+        }
+        orderAmountPaise = trancheAmountPaise;
+        pct = Math.round((trancheAmountPaise / (totalPaise || 1)) * 100);
+      } else if (paymentOption === 'advance') {
         pct = advancePct || 25;
         orderAmountPaise = Math.round((totalPaise * pct) / 100);
       } else {
         // Full payment
-        orderAmountPaise = totalPaise;
+        orderAmountPaise = balanceDuePaise > 0 ? balanceDuePaise : totalPaise;
       }
 
       // Generate order ID via Razorpay (production must create live order or fail fast)
@@ -222,12 +246,31 @@ export function buildPaymentServer() {
       );
 
       // Update booking payment option details
+      const bookingAdvancePct = paymentOption === 'advance' ? Math.min(99.99, pct) : null;
       await pgPool.query(
         `UPDATE order_svc.bookings
          SET payment_type = $1, advance_pct = $2
          WHERE id = $3`,
-        [paymentOption, pct, bookingId]
+        [paymentOption, bookingAdvancePct, bookingId]
       );
+
+      // Broadcast real-time NOTIFY event 'payment_in_progress'
+      try {
+        const realtimeEnvelope = {
+          event: 'payment_in_progress',
+          timestamp: new Date().toISOString(),
+          payload: {
+            bookingId,
+            catererId: booking.caterer_id,
+            customerId: booking.customer_id,
+            status: 'payment_in_progress',
+            amountPaise: orderAmountPaise,
+          },
+        };
+        await pgPool.query(`SELECT pg_notify('caterconnect_events', $1)`, [JSON.stringify(realtimeEnvelope)]);
+      } catch (notifyErr) {
+        req.log.warn({ notifyErr }, 'Failed to emit pg_notify for payment_in_progress');
+      }
 
       return reply.status(201).send({
         orderId: rzpOrderId,
@@ -392,6 +435,17 @@ export function buildPaymentServer() {
 
     // 2. Amount and Currency verification: paid amount & currency must match expected order
     if (typeof amountPaise === 'number' && payRow.amount_paise !== amountPaise) {
+      await sendPaymentAlertWebhook({
+        alertType: 'PAYMENT_AMOUNT_MISMATCH',
+        severity: 'CRITICAL',
+        message: `Recorded payment amount differs from Razorpay captured amount: expected ${payRow.amount_paise}, received ${amountPaise}`,
+        details: {
+          bookingId: payRow.booking_id,
+          expectedPaise: payRow.amount_paise,
+          receivedPaise: amountPaise,
+          error: 'Recorded payment amount differs from Razorpay captured amount',
+        },
+      });
       return {
         error: `Payment amount mismatch: expected ${payRow.amount_paise}, received ${amountPaise}`,
         statusCode: 400,
@@ -438,24 +492,27 @@ export function buildPaymentServer() {
     if (booking.status !== 'completed' && booking.status !== 'cancelled') {
       const totalAmount = booking.total_amount_paise || 0;
 
-      // Handle Balance Payment vs Initial Advance/Full Payment
-      if (payRow.payment_type === 'balance') {
+      // Handle Balance / Split Payment vs Initial Advance/Full Payment
+      if (payRow.payment_type === 'balance' || payRow.payment_type === 'split') {
         const updatedAmountPaid = (booking.amount_paid_paise || 0) + finalAmountPaise;
-        const updatedBalanceDue = Math.max(0, (booking.balance_due_paise || 0) - finalAmountPaise);
+        const updatedBalanceDue = Math.max(0, totalAmount - updatedAmountPaid);
 
         await client.query(
           `UPDATE order_svc.bookings 
-           SET amount_paid_paise = $1, 
+           SET status = 'paid',
+               amount_paid_paise = $1, 
                balance_due_paise = $2, 
+               advance_paid_at = COALESCE(advance_paid_at, NOW()),
+               balance_due_date = (CASE WHEN $3 > 0 THEN event_date - INTERVAL '2 days' ELSE NULL END),
                updated_at = NOW()
-           WHERE id = $3`,
-          [updatedAmountPaid, updatedBalanceDue, bookingId]
+           WHERE id = $4`,
+          [updatedAmountPaid, updatedBalanceDue, updatedBalanceDue, bookingId]
         );
 
         await client.query(
           `INSERT INTO order_svc.booking_status_history (booking_id, from_status, to_status, note)
            VALUES ($1, $2, 'paid', $3)`,
-          [bookingId, booking.status, `Balance payment captured via Razorpay ID: ${paymentId}`]
+          [bookingId, booking.status, `${payRow.payment_type === 'split' ? 'Split' : 'Balance'} payment captured via Razorpay ID: ${paymentId}`]
         );
 
         // Update settlement gross and net payout to full total order amounts
@@ -465,17 +522,19 @@ export function buildPaymentServer() {
         );
         const commissionPct = parseFloat(cRes.rows[0]?.commission_pct || '15.00');
         const commissionPaise = Math.round((totalAmount * commissionPct) / 100);
-        const netPayoutPaise = Math.max(0, totalAmount - commissionPaise);
+        const netPayoutPaise = Math.max(0, updatedAmountPaid - commissionPaise);
 
         await client.query(
-          `UPDATE pay_svc.caterer_settlements
-           SET gross_amount_paise = $1,
-               commission_pct = $2,
-               commission_amount_paise = $3,
-               net_payout_paise = $4,
-               updated_at = NOW()
-           WHERE booking_id = $5`,
-          [totalAmount, commissionPct, commissionPaise, netPayoutPaise, booking.id]
+          `INSERT INTO pay_svc.caterer_settlements
+           (booking_id, caterer_id, gross_amount_paise, commission_pct, commission_amount_paise, net_payout_paise, status)
+           VALUES ($1, $2, $3, $4, $5, $6, 'pending')
+           ON CONFLICT (booking_id) DO UPDATE 
+           SET gross_amount_paise = EXCLUDED.gross_amount_paise,
+               commission_pct = EXCLUDED.commission_pct,
+               commission_amount_paise = EXCLUDED.commission_amount_paise,
+               net_payout_paise = EXCLUDED.net_payout_paise,
+               updated_at = NOW()`,
+          [booking.id, booking.caterer_id, updatedAmountPaid, commissionPct, commissionPaise, netPayoutPaise]
         );
       } else {
         // Initial Advance or Full Payment
@@ -560,6 +619,31 @@ export function buildPaymentServer() {
           },
           client
         );
+      }
+
+      // Generate statutory GST commission invoice and tax ledger records
+      try {
+        await generateInvoiceAndTaxRecords(client, bookingId);
+      } catch (invErr) {
+        console.warn('Failed to generate invoice in processSuccessfulPayment:', invErr);
+      }
+
+      // Broadcast real-time NOTIFY 'booking_paid'
+      try {
+        const realtimeEnvelope = {
+          event: 'booking_paid',
+          timestamp: new Date().toISOString(),
+          payload: {
+            bookingId,
+            catererId: booking.caterer_id,
+            customerId: booking.customer_id,
+            status: 'paid',
+            amountPaise: finalAmountPaise,
+          },
+        };
+        await client.query(`SELECT pg_notify('caterconnect_events', $1)`, [JSON.stringify(realtimeEnvelope)]);
+      } catch (notifyErr) {
+        console.warn('Failed to emit pg_notify for booking_paid:', notifyErr);
       }
     }
 
@@ -652,6 +736,12 @@ export function buildPaymentServer() {
       const expectedBuf = Buffer.from(expectedSignature, 'utf8');
 
       if (sigBuf.length !== expectedBuf.length || !crypto.timingSafeEqual(sigBuf, expectedBuf)) {
+        await sendPaymentAlertWebhook({
+          alertType: 'WEBHOOK_SIGNATURE_INVALID',
+          severity: 'HIGH',
+          message: 'Received invalid Razorpay webhook signature',
+          details: { signatureLength: sigBuf.length },
+        }, req.log);
         return reply.status(400).send({ error: 'Invalid Razorpay webhook signature' });
       }
 
@@ -1356,6 +1446,106 @@ export function buildPaymentServer() {
     } catch (err: any) {
       req.log.error(err, 'Internal refund processing failed');
       return reply.status(500).send({ error: 'Internal refund failed' });
+    }
+  });
+
+  // Register Automated Payouts & Retry Routes (P1-2)
+  registerPayoutRoutes(server);
+
+  // Register Daily Reconciliation Engine & Admin Routes (P1-1)
+  registerReconciliationRoutes(server, processSuccessfulPayment, razorpayInstance);
+
+  // GET /api/bookings/:id/invoice (P1-6)
+  server.get('/api/bookings/:id/invoice', async (req, reply) => {
+    try {
+      const authUser = getAuthenticatedUser(req);
+      if (!authUser) {
+        return reply.status(401).send({ error: 'Unauthorized: Authentication required' });
+      }
+
+      const { id } = req.params as { id: string };
+      const bRes = await pgPool.query(
+        'SELECT id, customer_id, caterer_id, status FROM order_svc.bookings WHERE id = $1',
+        [id]
+      );
+
+      if (bRes.rows.length === 0) {
+        return reply.status(404).send({ error: 'Booking not found' });
+      }
+
+      const booking = bRes.rows[0];
+      if (booking.status === 'requested' || booking.status === 'accepted') {
+        return reply.status(400).send({ error: 'Invoice is only available for confirmed/paid bookings.' });
+      }
+
+      // Check access permission: customer, caterer owner, or admin
+      if (authUser.role !== 'admin' && booking.customer_id !== authUser.userId) {
+        const cRes = await pgPool.query(
+          'SELECT id FROM caterer_svc.caterers WHERE id = $1 AND owner_id = $2',
+          [booking.caterer_id, authUser.userId]
+        );
+        if (cRes.rows.length === 0 && authUser.userId !== booking.caterer_id) {
+          return reply.status(403).send({ error: 'Forbidden: You do not have permission to view this invoice' });
+        }
+      }
+
+      const client = await pgPool.connect();
+      try {
+        await client.query('BEGIN');
+        const invoice = await generateInvoiceAndTaxRecords(client, id);
+        await client.query('COMMIT');
+        if (!invoice) {
+          return reply.status(404).send({ error: 'Invoice not found' });
+        }
+
+        const lineItems = typeof invoice.line_items === 'string'
+          ? JSON.parse(invoice.line_items)
+          : invoice.line_items || [];
+
+        return reply.send({
+          success: true,
+          invoice: {
+            id: invoice.id,
+            bookingId: invoice.booking_id,
+            catererId: invoice.caterer_id,
+            customerId: invoice.customer_id,
+            invoiceNumber: invoice.invoice_number,
+            invoiceType: invoice.invoice_type,
+            totalAmountPaise: invoice.total_amount_paise,
+            taxableAmountPaise: invoice.taxable_amount_paise,
+            totalTaxPaise: (invoice.cgst_paise || 0) + (invoice.sgst_paise || 0) + (invoice.igst_paise || 0),
+            cgstPaise: invoice.cgst_paise,
+            sgstPaise: invoice.sgst_paise,
+            igstPaise: invoice.igst_paise || 0,
+            sacCode: invoice.sac_code,
+            status: invoice.status,
+            lineItems,
+            createdAt: invoice.created_at,
+            // Aliases for db-row compatibility
+            booking_id: invoice.booking_id,
+            caterer_id: invoice.caterer_id,
+            customer_id: invoice.customer_id,
+            invoice_number: invoice.invoice_number,
+            invoice_type: invoice.invoice_type,
+            total_amount_paise: invoice.total_amount_paise,
+            taxable_amount_paise: invoice.taxable_amount_paise,
+            cgst_paise: invoice.cgst_paise,
+            sgst_paise: invoice.sgst_paise,
+            igst_paise: invoice.igst_paise,
+            sac_code: invoice.sac_code,
+            line_items: lineItems,
+            created_at: invoice.created_at,
+          },
+        });
+      } catch (err: any) {
+        await client.query('ROLLBACK');
+        throw err;
+      } finally {
+        client.release();
+      }
+    } catch (err: any) {
+      req.log.error(err);
+      return reply.status(500).send({ error: 'Failed to retrieve invoice' });
     }
   });
 

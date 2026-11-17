@@ -1,11 +1,14 @@
 import React from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '@/lib/auth/AuthContext';
 import { ChefHat, Shield, LogOut } from 'lucide-react';
 
 export const Navbar: React.FC = () => {
   const { user, profile, role, signOut } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
+
+  const isActive = (path: string) => location.pathname.startsWith(path);
 
   const handleSignOut = async () => {
     await signOut();
@@ -41,6 +44,29 @@ export const Navbar: React.FC = () => {
             </span>
           </div>
         </Link>
+
+        {role === 'caterer' && (
+          <nav className="hidden md:flex items-center gap-4 text-sm font-medium">
+            <Link
+              to="/caterer/dashboard"
+              className={`hover:text-amber-600 transition ${isActive('/caterer/dashboard') ? 'text-amber-600 font-semibold' : 'text-slate-600'}`}
+            >
+              Dashboard
+            </Link>
+            <Link
+              to="/caterer/chat"
+              className={`hover:text-amber-600 transition ${isActive('/caterer/chat') ? 'text-amber-600 font-semibold' : 'text-slate-600'}`}
+            >
+              Chat &amp; Messages
+            </Link>
+            <Link
+              to="/caterer/policies"
+              className={`hover:text-amber-600 transition ${isActive('/caterer/policies') ? 'text-amber-600 font-semibold' : 'text-slate-600'}`}
+            >
+              Order Policies
+            </Link>
+          </nav>
+        )}
 
         {/* User Status & Sign Out */}
         <div className="flex items-center gap-3">

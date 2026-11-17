@@ -223,6 +223,25 @@ export class OutboxWorker {
         break;
       }
 
+      case 'booking_reminder':
+      case 'payment_deadline_reminder':
+      case 'balance_due_reminder': {
+        if (customerId) {
+          await this.dispatcher.sendWebPush(customerId, {
+            title: 'Booking Reminder',
+            body: payload?.params?.customerName ? `Reminder for your booking with ${payload.params.catererName || 'your caterer'}` : 'Booking reminder from CaterConnect',
+            data: { bookingId, url: `/bookings/${bookingId}` },
+          }).catch(() => {});
+        }
+        if (recipientPhone) {
+          await this.dispatcher.sendWhatsApp(
+            recipientPhone,
+            `[CaterConnect Reminder] Update regarding booking ${bookingId}: Please check your portal.`
+          ).catch(() => {});
+        }
+        break;
+      }
+
       default:
         console.warn(`[OutboxWorker] Unhandled event type: ${event_type}`);
     }

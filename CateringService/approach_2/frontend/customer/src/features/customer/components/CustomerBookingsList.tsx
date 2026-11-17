@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import {
   Calendar,
@@ -25,6 +25,8 @@ import { PaymentModal } from '@/features/payment/components/PaymentModal';
 import { ReviewModal } from '@/features/reviews/components/ReviewModal';
 import { WhatsAppButton } from '@/features/customer/components/WhatsAppButton';
 import { ChatDrawer } from '@/features/chat/ChatDrawer';
+import { useRealtimeUpdates } from '@/hooks/useRealtimeUpdates';
+import type { RealtimeEvent } from '@/hooks/useRealtimeUpdates';
 import type { Booking, Review } from '@/types/database';
 
 export const CustomerBookingsList: React.FC = () => {
@@ -54,7 +56,7 @@ export const CustomerBookingsList: React.FC = () => {
     return `${minutes}m left`;
   };
 
-  const loadBookings = async () => {
+  const loadBookings = useCallback(async () => {
     try {
       setLoading(true);
       setError(null);
@@ -66,11 +68,33 @@ export const CustomerBookingsList: React.FC = () => {
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
 
   useEffect(() => {
     loadBookings();
-  }, []);
+  }, [loadBookings]);
+
+  // ── Real-time updates ──────────────────────────────────────────────────────
+  const handleRealtimeEvent = useCallback(
+    (evt: RealtimeEvent) => {
+      const relevantEvents = [
+        'booking_accepted',
+        'booking_rejected',
+        'payment_in_progress',
+        'payment.paid',
+      ];
+      if (relevantEvents.includes(evt.event)) {
+        loadBookings();
+      }
+    },
+    [loadBookings],
+  );
+
+  const { connected: wsConnected } = useRealtimeUpdates(
+    handleRealtimeEvent,
+    '/api/bookings/customer',
+  );
+  // ── End real-time updates ──────────────────────────────────────────────────
 
   const handleCancelBooking = async (bookingId: string) => {
     const reason = window.prompt('Please enter a cancellation reason:', 'Event postponed or cancelled');
@@ -206,6 +230,20 @@ export const CustomerBookingsList: React.FC = () => {
           >
             <RefreshCw className="h-4 w-4" />
           </button>
+          <span
+            className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-[10px] font-semibold ${
+              wsConnected
+                ? 'bg-emerald-100 text-emerald-800'
+                : 'bg-amber-100 text-amber-800'
+            }`}
+          >
+            <span
+              className={`h-1.5 w-1.5 rounded-full ${
+                wsConnected ? 'bg-emerald-500 animate-pulse' : 'bg-amber-400'
+              }`}
+            />
+            {wsConnected ? 'Live' : 'Polling'}
+          </span>
           <Link
             to="/"
             className="rounded-lg bg-emerald-600 px-3.5 py-2 text-xs font-semibold text-white hover:bg-emerald-700 shadow-2xs transition"

@@ -131,10 +131,12 @@ describe('Caterer & Menu Service Integration', () => {
     expect(Array.isArray(caterers)).toBe(true);
     expect(caterers.length).toBeGreaterThanOrEqual(1);
 
+    const targetCaterer = caterers.find((c: any) => c.id === 'd0000000-0000-0000-0000-000000000001') || caterers[0];
+
     // 2. Reject caterer without reason -> 400
     const failRes = await app.inject({
       method: 'PATCH',
-      url: `/api/admin/caterers/${caterers[0].id}/status`,
+      url: `/api/admin/caterers/${targetCaterer.id}/status`,
       headers: adminHeaders,
       payload: { status: 'rejected' },
     });
@@ -143,7 +145,7 @@ describe('Caterer & Menu Service Integration', () => {
     // 3. Update caterer status to approved
     const patchRes = await app.inject({
       method: 'PATCH',
-      url: `/api/admin/caterers/${caterers[0].id}/status`,
+      url: `/api/admin/caterers/${targetCaterer.id}/status`,
       headers: adminHeaders,
       payload: { status: 'approved' },
     });

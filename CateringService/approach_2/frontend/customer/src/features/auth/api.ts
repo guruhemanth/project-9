@@ -13,6 +13,7 @@ export async function registerApi(data: {
   fullName: string;
   phone: string;
   role: 'customer' | 'caterer';
+  dpdpConsent?: boolean;
 }) {
   return apiFetch<{ user: any; token: string }>('/api/auth/register', {
     method: 'POST',

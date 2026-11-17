@@ -10,6 +10,7 @@ export const RegisterPage: React.FC = () => {
   const [password, setPassword] = useState('');
   const [fullName, setFullName] = useState('');
   const [phone, setPhone] = useState('+91');
+  const [dpdpConsent, setDpdpConsent] = useState(false);
   const role = 'customer';
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -28,6 +29,7 @@ export const RegisterPage: React.FC = () => {
         fullName,
         phone,
         role,
+        dpdpConsent,
       });
 
       login(res.token, res.user);
@@ -115,6 +117,20 @@ export const RegisterPage: React.FC = () => {
                 className="w-full rounded-lg border border-slate-200 py-2.5 pl-9 pr-3 text-sm focus:border-emerald-600 focus:outline-none focus:ring-1 focus:ring-emerald-600"
               />
             </div>
+          </div>
+
+          <div className="flex items-start gap-2">
+            <input
+              type="checkbox"
+              id="dpdpConsent"
+              required
+              checked={dpdpConsent}
+              onChange={(e) => setDpdpConsent(e.target.checked)}
+              className="mt-1 h-4 w-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
+            />
+            <label htmlFor="dpdpConsent" className="text-xs text-slate-600">
+              I consent to the collection and processing of my personal data under the Digital Personal Data Protection (DPDP) Act 2023.
+            </label>
           </div>
 
           <button

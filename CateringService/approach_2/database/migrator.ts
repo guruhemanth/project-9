@@ -130,6 +130,32 @@ const MIGRATIONS: MigrationDefinition[] = [
       DROP TABLE IF EXISTS audit_svc.admin_audit_logs CASCADE;
     `,
   },
+  {
+    name: '16_p1_remediation_schema',
+    upFile: '16_p1_remediation_schema.sql',
+    downSql: `
+      DROP TABLE IF EXISTS order_svc.disputes CASCADE;
+      DROP TABLE IF EXISTS notify_svc.reminders_sent CASCADE;
+      DROP TABLE IF EXISTS pay_svc.caterer_penalties CASCADE;
+      ALTER TABLE order_svc.bookings DROP COLUMN IF EXISTS rebooked_from_booking_id;
+      ALTER TABLE order_svc.bookings DROP COLUMN IF EXISTS caterer_penalty_paise;
+      DROP TABLE IF EXISTS pay_svc.tax_ledger CASCADE;
+      DROP TABLE IF EXISTS pay_svc.invoices CASCADE;
+      ALTER TABLE pay_svc.caterer_settlements
+        DROP COLUMN IF EXISTS payout_id,
+        DROP COLUMN IF EXISTS payout_status,
+        DROP COLUMN IF EXISTS payout_mode,
+        DROP COLUMN IF EXISTS retry_count,
+        DROP COLUMN IF EXISTS next_retry_at,
+        DROP COLUMN IF EXISTS last_error;
+      DROP TABLE IF EXISTS pay_svc.reconciliation_discrepancies CASCADE;
+      DROP TABLE IF EXISTS pay_svc.reconciliation_runs CASCADE;
+      ALTER TABLE caterer_svc.caterers DROP COLUMN IF EXISTS correction_notes;
+      ALTER TABLE caterer_svc.caterers DROP CONSTRAINT IF EXISTS caterers_status_check;
+      ALTER TABLE caterer_svc.caterers ADD CONSTRAINT caterers_status_check
+        CHECK (status = ANY (ARRAY['pending'::text, 'approved'::text, 'rejected'::text, 'suspended'::text]));
+    `,
+  },
 ];
 
 function getConnectionString(): string {

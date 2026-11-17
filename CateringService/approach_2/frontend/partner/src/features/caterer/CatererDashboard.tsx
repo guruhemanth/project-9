@@ -1,4 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import { useRealtimeUpdates } from '@/hooks/useRealtimeUpdates';
+import type { RealtimeEvent } from '@/hooks/useRealtimeUpdates';
 import { useAuth } from '@/lib/auth/AuthContext';
 import {
   Clock,
@@ -101,6 +103,35 @@ export const CatererDashboard: React.FC = () => {
     loadBookings();
   }, [loadBookings]);
 
+  // ── Real-time updates ──────────────────────────────────────────────────────
+  const handleRealtimeEvent = useCallback(
+    (evt: RealtimeEvent) => {
+      const relevantEvents = [
+        'booking_requested',
+        'booking_accepted',
+        'booking_rejected',
+        'payment_in_progress',
+        'payment.paid',
+      ];
+      if (relevantEvents.includes(evt.event) && caterer?.id) {
+        // Reload bookings to reflect the latest status
+        loadBookings();
+      }
+    },
+    [caterer?.id, loadBookings],
+  );
+
+  const pollFallbackUrl = caterer?.id
+    ? `/api/bookings/caterer/${caterer.id}`
+    : null;
+
+  const { connected: wsConnected } = useRealtimeUpdates(
+    handleRealtimeEvent,
+    caterer?.id,
+    pollFallbackUrl,
+  );
+  // ── End real-time updates ──────────────────────────────────────────────────
+
   useEffect(() => {
     if (caterer?.id && activeTab === 'earnings') {
       fetchCatererSettlements(caterer.id)
@@ -194,6 +225,23 @@ export const CatererDashboard: React.FC = () => {
 
   return (
     <div className="space-y-6">
+      {/* Real-time connection indicator */}
+      <div className="flex justify-end">
+        <span
+          className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-[10px] font-semibold ${
+            wsConnected
+              ? 'bg-emerald-100 text-emerald-800'
+              : 'bg-amber-100 text-amber-800'
+          }`}
+        >
+          <span
+            className={`h-1.5 w-1.5 rounded-full ${
+              wsConnected ? 'bg-emerald-500 animate-pulse' : 'bg-amber-400'
+            }`}
+          />
+          {wsConnected ? 'Live Updates' : 'Polling (5s)'}
+        </span>
+      </div>
       {/* Verification Status Banner */}
       {caterer.status === 'pending' && (
         <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 shadow-xs">

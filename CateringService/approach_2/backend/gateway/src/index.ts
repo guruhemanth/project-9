@@ -49,10 +49,12 @@ function isPublicRoute(method: string, url: string): boolean {
 
 export function buildGatewayServer() {
   const env = validateEnv(createGatewayEnvSchema(), process.env);
+  const isTest = process.env.NODE_ENV === 'test' || Boolean(process.env.VITEST);
   const server = Fastify({
     logger: {
       redact: loggerRedactionConfig,
     },
+    trustProxy: true,
     bodyLimit: 15728640, // 15MB payload limit for dish photos and media
     connectionTimeout: 10000, // 10s
     requestTimeout: 15000, // 15s
@@ -66,11 +68,13 @@ export function buildGatewayServer() {
 
   server.register(fastifyRateLimit, {
     global: true,
+    allowList: ['127.0.0.1', '::1'],
     max: (req) => {
       // Stricter rate limit on sensitive authentication endpoints
       if (req.url?.startsWith('/api/auth/login') || req.url?.startsWith('/api/auth/register')) {
         return 10;
       }
+      if (isTest) return 10000;
       return 100;
     },
     timeWindow: '1 minute',
@@ -99,8 +103,15 @@ export function buildGatewayServer() {
     secret: env.JWT_SECRET,
   });
 
-  // Strip client-sent x-user-* and internal security headers on EVERY incoming request
-  server.addHook('onRequest', async (req) => {
+  // Application-layer HTTPS redirect enforcement (P1-19) & Strip client-sent x-user-* and internal security headers on EVERY incoming request
+  server.addHook('onRequest', async (req, reply) => {
+    const forwardedProto = req.headers['x-forwarded-proto'];
+    const rawProto = Array.isArray(forwardedProto) ? forwardedProto[0] : forwardedProto;
+    const isHttp = typeof rawProto === 'string' && rawProto.split(',')[0].trim().toLowerCase() === 'http';
+    if (isHttp) {
+      const host = req.headers.host || req.hostname;
+      return reply.redirect(`https://${host}${req.raw.url}`, 301);
+    }
     delete req.headers['x-user-id'];
     delete req.headers['x-user-role'];
     delete req.headers['x-internal-token'];
@@ -123,6 +134,20 @@ export function buildGatewayServer() {
   // Generic JWT authentication hook that signs internal token for downstream services
   const requireAuth = async (req: any, reply: any) => {
     if (isPublicRoute(req.method, req.url)) {
+      if (req.headers.authorization) {
+        try {
+          await req.jwtVerify();
+          const user = req.user as { sub: string; role: any; email?: string };
+          req.headers['x-user-id'] = user.sub;
+          req.headers['x-user-role'] = user.role;
+          req.headers['x-internal-token'] = signInternalToken(
+            { userId: user.sub, role: user.role, email: user.email },
+            env.JWT_SECRET
+          );
+        } catch {
+          // Token verification failed on public route; continue without auth headers
+        }
+      }
       return;
     }
 
@@ -223,15 +248,20 @@ export function buildGatewayServer() {
     prefix: '/api/caterers',
     rewritePrefix: '/api/caterers',
     preHandler: async (req, reply) => {
-      // Allow GET public routes; require authentication for mutations and protected reads
-      if (isPublicRoute(req.method, req.url)) {
-        return;
-      }
+      // Allow GET public routes (with optional auth forwarding); require authentication for mutations and protected reads
       return requireAuth(req, reply);
     },
   });
 
-  // 3. Booking & Order Service Routes
+  // 3a. Booking Invoices -> Payment Service (P1-6: Statutory GST Invoicing & TDS/TCS Ledger)
+  server.register(fastifyHttpProxy, {
+    upstream: PAYMENT_URL,
+    prefix: '/api/bookings/:id/invoice',
+    rewritePrefix: '/api/bookings/:id/invoice',
+    preHandler: requireAuth,
+  });
+
+  // 3b. Booking & Order Service General Routes
   server.register(fastifyHttpProxy, {
     upstream: BOOKING_URL,
     prefix: '/api/bookings',
@@ -263,12 +293,59 @@ export function buildGatewayServer() {
     },
   });
 
-  // 5. Notification Service Routes (Protected)
+  // 5a. Real-Time Events WebSocket Proxy (Notification Service)
+  server.register(fastifyHttpProxy, {
+    upstream: NOTIFY_URL,
+    prefix: '/api/events',
+    rewritePrefix: '/api/events',
+    websocket: true,
+    wsClientOptions: {
+      rewriteRequestHeaders: (headers: any, req: any) => {
+        const res = { ...headers };
+        if (req.headers && req.headers.authorization) {
+          res.authorization = req.headers.authorization;
+        } else {
+          delete res.authorization;
+        }
+        for (const key of Object.keys(res)) {
+          if (res[key] === undefined) {
+            delete res[key];
+          }
+        }
+        return res;
+      },
+    } as any,
+  });
+
+  // 5b. Notification Service Routes (Protected + WebSocket enabled)
   server.register(fastifyHttpProxy, {
     upstream: NOTIFY_URL,
     prefix: '/api/notify',
     rewritePrefix: '/api/notify',
-    preHandler: requireAuth,
+    websocket: true,
+    wsClientOptions: {
+      rewriteRequestHeaders: (headers: any, req: any) => {
+        const res = { ...headers };
+        if (req.headers && req.headers.authorization) {
+          res.authorization = req.headers.authorization;
+        } else {
+          delete res.authorization;
+        }
+        for (const key of Object.keys(res)) {
+          if (res[key] === undefined) {
+            delete res[key];
+          }
+        }
+        return res;
+      },
+    } as any,
+    preHandler: async (req, reply) => {
+      // Allow WebSocket handshake carrying token query param or authorization header
+      if (req.raw.headers.upgrade === 'websocket' || req.url.includes('/ws')) {
+        return;
+      }
+      return requireAuth(req, reply);
+    },
   });
 
   // 6. Chat & Messaging Routes
@@ -305,6 +382,20 @@ export function buildGatewayServer() {
     upstream: PAYMENT_URL,
     prefix: '/api/admin/analytics',
     rewritePrefix: '/api/admin/analytics',
+    preHandler: adminAuthPreHandler,
+  });
+
+  server.register(fastifyHttpProxy, {
+    upstream: PAYMENT_URL,
+    prefix: '/api/admin/reconciliation',
+    rewritePrefix: '/api/admin/reconciliation',
+    preHandler: adminAuthPreHandler,
+  });
+
+  server.register(fastifyHttpProxy, {
+    upstream: BOOKING_URL,
+    prefix: '/api/admin/disputes',
+    rewritePrefix: '/api/admin/disputes',
     preHandler: adminAuthPreHandler,
   });
 

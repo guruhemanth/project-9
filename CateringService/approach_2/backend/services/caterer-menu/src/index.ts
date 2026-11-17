@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import Fastify from 'fastify';
 import fastifyCors from '@fastify/cors';
 import fastifyHelmet from '@fastify/helmet';
@@ -490,7 +491,44 @@ export function buildCatererServer() {
     }
   });
 
-  // Admin status update (approve, reject, suspend) - STRICT ADMIN GUARD
+  async function validateCatererPhotoGate(catererId: string): Promise<{ valid: boolean; code?: string; message?: string }> {
+    const pkgs = await pgPool.query(
+      `SELECT id, name, image_url, is_active FROM caterer_svc.packages WHERE caterer_id = $1 AND is_active = true`,
+      [catererId]
+    );
+    if (pkgs.rows.length === 0) {
+      return {
+        valid: false,
+        code: 'PHOTOS_REQUIRED',
+        message: 'Caterer must have at least one active package before approval',
+      };
+    }
+    for (const pkg of pkgs.rows) {
+      if (!pkg.image_url || pkg.image_url.trim().length === 0) {
+        return {
+          valid: false,
+          code: 'PHOTOS_REQUIRED',
+          message: `Package '${pkg.name}' is missing a photo`,
+        };
+      }
+    }
+    const items = await pgPool.query(
+      `SELECT id, name, image_url FROM caterer_svc.menu_items WHERE caterer_id = $1`,
+      [catererId]
+    );
+    for (const item of items.rows) {
+      if (!item.image_url || item.image_url.trim().length === 0) {
+        return {
+          valid: false,
+          code: 'PHOTOS_REQUIRED',
+          message: `Menu item '${item.name}' is missing a photo`,
+        };
+      }
+    }
+    return { valid: true };
+  }
+
+  // Admin status update (approve, reject, suspend, needs_correction, under_review) - STRICT ADMIN GUARD
   server.patch('/api/caterers/:id/status', async (req, reply) => {
     const authUser = getAuthenticatedUser(req);
     if (!authUser || authUser.role !== 'admin') {
@@ -498,27 +536,57 @@ export function buildCatererServer() {
     }
 
     const { id } = req.params as { id: string };
-    const { status, rejectionReason } = (req.body as any) || {};
+    const body = (req.body as any) || {};
+    const status = body.status;
+    const notes = (body.notes || body.correctionNotes || '').trim();
+    const rejectionReason = (body.rejectionReason || body.notes || '').trim();
 
-    if (!['pending', 'approved', 'rejected', 'suspended'].includes(status)) {
+    const allowedStatuses = ['pending', 'approved', 'rejected', 'needs_correction', 'under_review', 'suspended'];
+    if (!status || !allowedStatuses.includes(status)) {
       return reply.status(400).send({ error: 'Invalid caterer status' });
+    }
+
+    if (status === 'needs_correction' && !notes) {
+      return reply.status(400).send({ error: 'Feedback notes are required when requesting corrections' });
     }
 
     if (status === 'rejected' && !rejectionReason) {
       return reply.status(400).send({ error: 'Rejection reason is required when rejecting a caterer' });
     }
 
+    if (status === 'approved') {
+      const photoCheck = await validateCatererPhotoGate(id);
+      if (!photoCheck.valid) {
+        return reply.status(422).send({
+          statusCode: 422,
+          error: 'Unprocessable Entity',
+          code: photoCheck.code || 'PHOTOS_REQUIRED',
+          message: photoCheck.message,
+        });
+      }
+    }
+
     const updateRes = await pgPool.query(
       `UPDATE caterer_svc.caterers
-       SET status = $1, rejection_reason = $2, updated_at = NOW()
-       WHERE id = $3
+       SET status = $1, 
+           rejection_reason = $2, 
+           correction_notes = $3, 
+           updated_at = NOW()
+       WHERE id = $4
        RETURNING *`,
-      [status, status === 'rejected' ? rejectionReason : null, id]
+      [
+        status, 
+        status === 'rejected' ? rejectionReason : null, 
+        status === 'needs_correction' ? notes : null, 
+        id
+      ]
     );
 
     if (updateRes.rows.length === 0) {
       return reply.status(404).send({ error: 'Caterer not found' });
     }
+
+    const r = updateRes.rows[0];
 
     // Record in audit_svc.admin_audit_logs (P0-27)
     await pgPool.query(
@@ -528,16 +596,20 @@ export function buildCatererServer() {
         authUser.userId,
         `caterer_${status}`,
         id,
-        JSON.stringify({ newStatus: status, rejectionReason: rejectionReason || null }),
+        JSON.stringify({ newStatus: status, rejectionReason: r.rejection_reason, correctionNotes: r.correction_notes }),
         req.ip || null,
       ]
     );
 
     return reply.send({
+      success: true,
       caterer: {
-        id: updateRes.rows[0].id,
-        status: updateRes.rows[0].status,
-        rejectionReason: updateRes.rows[0].rejection_reason,
+        id: r.id,
+        businessName: r.business_name,
+        status: r.status,
+        correctionNotes: r.correction_notes,
+        rejectionReason: r.rejection_reason,
+        updatedAt: r.updated_at,
       },
     });
   });
@@ -972,7 +1044,7 @@ export function buildCatererServer() {
     }
   });
 
-  // Admin: Update caterer status (approve, reject with reason, suspend) - STRICT ADMIN GUARD
+  // Admin: Update caterer status (approve, reject with reason, suspend, needs_correction, under_review) - STRICT ADMIN GUARD
   server.patch('/api/admin/caterers/:id/status', async (req, reply) => {
     try {
       const authUser = getAuthenticatedUser(req);
@@ -981,25 +1053,50 @@ export function buildCatererServer() {
       }
 
       const { id } = req.params as { id: string };
-      const { status, rejectionReason } = req.body as {
-        status: CatererStatus;
-        rejectionReason?: string;
-      };
+      const body = (req.body as any) || {};
+      const status = body.status;
+      const notes = (body.notes || body.correctionNotes || '').trim();
+      const rejectionReason = (body.rejectionReason || body.notes || '').trim();
 
-      if (!['pending', 'approved', 'rejected', 'suspended'].includes(status)) {
+      const allowedStatuses = ['pending', 'approved', 'rejected', 'needs_correction', 'under_review', 'suspended'];
+      if (!status || !allowedStatuses.includes(status)) {
         return reply.status(400).send({ error: 'Invalid caterer status' });
+      }
+
+      if (status === 'needs_correction' && !notes) {
+        return reply.status(400).send({ error: 'Feedback notes are required when requesting corrections' });
       }
 
       if (status === 'rejected' && !rejectionReason) {
         return reply.status(400).send({ error: 'Rejection reason is required when rejecting a caterer' });
       }
 
+      if (status === 'approved') {
+        const photoCheck = await validateCatererPhotoGate(id);
+        if (!photoCheck.valid) {
+          return reply.status(422).send({
+            statusCode: 422,
+            error: 'Unprocessable Entity',
+            code: photoCheck.code || 'PHOTOS_REQUIRED',
+            message: photoCheck.message,
+          });
+        }
+      }
+
       const res = await pgPool.query(
         `UPDATE caterer_svc.caterers
-         SET status = $1, rejection_reason = $2, updated_at = NOW()
-         WHERE id = $3
+         SET status = $1, 
+             rejection_reason = $2, 
+             correction_notes = $3, 
+             updated_at = NOW()
+         WHERE id = $4
          RETURNING *`,
-        [status, status === 'rejected' ? rejectionReason : null, id]
+        [
+          status, 
+          status === 'rejected' ? rejectionReason : null, 
+          status === 'needs_correction' ? notes : null, 
+          id
+        ]
       );
 
       if (res.rows.length === 0) {
@@ -1007,12 +1104,26 @@ export function buildCatererServer() {
       }
 
       const r = res.rows[0];
+
+      await pgPool.query(
+        `INSERT INTO audit_svc.admin_audit_logs (admin_id, action, entity_type, entity_id, details, ip_address)
+         VALUES ($1, $2, 'caterer', $3, $4, $5)`,
+        [
+          authUser.userId,
+          `caterer_${status}`,
+          id,
+          JSON.stringify({ newStatus: status, rejectionReason: r.rejection_reason, correctionNotes: r.correction_notes }),
+          req.ip || null,
+        ]
+      );
+
       return reply.send({
         success: true,
         caterer: {
           id: r.id,
           businessName: r.business_name,
           status: r.status,
+          correctionNotes: r.correction_notes,
           rejectionReason: r.rejection_reason,
           updatedAt: r.updated_at,
         },
@@ -1494,6 +1605,203 @@ export function buildCatererServer() {
     } catch (err: any) {
       req.log.error(err);
       return reply.status(500).send({ error: 'Failed to update caterer settings' });
+    }
+  });
+
+  // ==============================================================
+  // Caterer Documents & Signed URLs (P1-9)
+  // ==============================================================
+
+  // GET /api/caterers/:id/documents/:docType/signed-url (P1-9)
+  server.get('/api/caterers/:id/documents/:docType/signed-url', async (req, reply) => {
+    try {
+      const authUser = getAuthenticatedUser(req);
+      if (!authUser) {
+        return reply.status(401).send({ error: 'Unauthorized: Authentication required' });
+      }
+
+      const { id, docType } = req.params as { id: string; docType: string };
+
+      // Auth guard: Caterer owner or Admin only (BOLA check)
+      if (authUser.role !== 'admin') {
+        const cRes = await pgPool.query(
+          'SELECT id FROM caterer_svc.caterers WHERE id = $1 AND owner_id = $2',
+          [id, authUser.userId]
+        );
+        if (cRes.rows.length === 0 && authUser.userId !== id) {
+          return reply.status(403).send({ error: 'Forbidden: You do not have permission to view documents for this caterer' });
+        }
+      }
+
+      // Check caterer exists
+      const catCheck = await pgPool.query('SELECT id FROM caterer_svc.caterers WHERE id = $1', [id]);
+      if (catCheck.rows.length === 0) {
+        return reply.status(404).send({ error: 'Caterer not found' });
+      }
+
+      const ttlMs = 15 * 60 * 1000; // 15 minutes
+      const expiresAt = new Date(Date.now() + ttlMs).toISOString();
+      const secret = process.env.JWT_SECRET || 'caterconnect-super-secret-development-jwt-key-min-32-chars';
+      
+      const token = crypto
+        .createHmac('sha256', secret)
+        .update(`${id}:${docType}:${expiresAt}`)
+        .digest('hex');
+
+      // Check if document record exists
+      const existingDoc = await pgPool.query(
+        `SELECT id FROM caterer_svc.caterer_documents 
+         WHERE caterer_id = $1 AND (document_type = $2 OR doc_type = $2) LIMIT 1`,
+        [id, docType]
+      );
+
+      if (existingDoc.rows.length > 0) {
+        await pgPool.query(
+          `UPDATE caterer_svc.caterer_documents
+           SET signed_token = $1,
+               signed_token_expires_at = $2,
+               updated_at = NOW()
+           WHERE id = $3`,
+          [token, expiresAt, existingDoc.rows[0].id]
+        );
+      } else {
+        await pgPool.query(
+          `INSERT INTO caterer_svc.caterer_documents (caterer_id, document_type, doc_type, file_path, status, signed_token, signed_token_expires_at)
+           VALUES ($1, $2, $2, $3, 'pending', $4, $5)`,
+          [id, docType, `/private/documents/${id}/${docType}.pdf`, token, expiresAt]
+        );
+      }
+
+      return reply.send({
+        success: true,
+        signedUrl: `/api/caterers/${id}/documents/${docType}?token=${token}&expiresAt=${encodeURIComponent(expiresAt)}`,
+        expiresAt,
+      });
+    } catch (err: any) {
+      req.log.error(err);
+      return reply.status(500).send({ error: 'Failed to generate signed URL' });
+    }
+  });
+
+  // GET /api/caterers/:id/documents/:docType (Preview with HMAC signature check)
+  server.get('/api/caterers/:id/documents/:docType', async (req, reply) => {
+    try {
+      const { id, docType } = req.params as { id: string; docType: string };
+      const { token, expiresAt } = req.query as { token?: string; expiresAt?: string };
+
+      if (!token || !expiresAt) {
+        return reply.status(401).send({ error: 'Unauthorized: Missing signed token or expiration' });
+      }
+
+      if (new Date(expiresAt).getTime() < Date.now()) {
+        return reply.status(401).send({ error: 'Unauthorized: Signed preview URL has expired' });
+      }
+
+      const secret = process.env.JWT_SECRET || 'caterconnect-super-secret-development-jwt-key-min-32-chars';
+      const expectedToken1 = crypto
+        .createHmac('sha256', secret)
+        .update(`${id}:${docType}:${expiresAt}`)
+        .digest('hex');
+
+      const docRes = await pgPool.query(
+        `SELECT * FROM caterer_svc.caterer_documents WHERE caterer_id = $1 AND document_type = $2`,
+        [id, docType]
+      );
+
+      let expectedToken2 = '';
+      if (docRes.rows.length > 0 && docRes.rows[0].file_path) {
+        expectedToken2 = crypto
+          .createHmac('sha256', secret)
+          .update(`${docRes.rows[0].file_path}:${expiresAt}`)
+          .digest('hex');
+      }
+
+      const isValid = (token === expectedToken1) || (expectedToken2 && token === expectedToken2) || (docRes.rows[0]?.signed_token === token);
+      if (!isValid) {
+        return reply.status(401).send({ error: 'Unauthorized: Invalid or tampered document signature' });
+      }
+
+      return reply.send({
+        success: true,
+        document: {
+          catererId: id,
+          documentType: docType,
+          status: docRes.rows[0]?.status || 'verified',
+          filePath: docRes.rows[0]?.file_path || `/private/documents/${id}/${docType}.pdf`,
+          expiresAt,
+        },
+      });
+    } catch (err: any) {
+      req.log.error(err);
+      return reply.status(500).send({ error: 'Failed to access document preview' });
+    }
+  });
+
+  // POST /api/caterers/:id/documents (Document upload & FSSAI validation)
+  server.post('/api/caterers/:id/documents', async (req, reply) => {
+    try {
+      const authUser = getAuthenticatedUser(req);
+      if (!authUser) {
+        return reply.status(401).send({ error: 'Unauthorized: Authentication required' });
+      }
+
+      const { id } = req.params as { id: string };
+      if (authUser.role !== 'admin') {
+        const cRes = await pgPool.query('SELECT id FROM caterer_svc.caterers WHERE id = $1 AND owner_id = $2', [id, authUser.userId]);
+        if (cRes.rows.length === 0 && authUser.userId !== id) {
+          return reply.status(403).send({ error: 'Forbidden: You do not own this caterer profile' });
+        }
+      }
+
+      const body = (req.body as any) || {};
+      const { documentType, filePath, fssaiNumber } = body;
+
+      if (!documentType) {
+        return reply.status(400).send({ error: 'documentType is required' });
+      }
+
+      // 14-digit numeric FSSAI validation (P1-9)
+      if (documentType === 'fssai_certificate' || fssaiNumber) {
+        const num = fssaiNumber || body.licenseNumber;
+        if (num && !/^[0-9]{14}$/.test(String(num).trim())) {
+          return reply.status(400).send({ error: 'FSSAI license must be exactly 14 numeric digits' });
+        }
+        if (num) {
+          await pgPool.query('UPDATE caterer_svc.caterers SET fssai_number = $1 WHERE id = $2', [String(num).trim(), id]);
+        }
+      }
+
+      let docRecord: any;
+      const existing = await pgPool.query(
+        `SELECT id FROM caterer_svc.caterer_documents WHERE caterer_id = $1 AND (document_type = $2 OR doc_type = $2) LIMIT 1`,
+        [id, documentType]
+      );
+      if (existing.rows.length > 0) {
+        const u = await pgPool.query(
+          `UPDATE caterer_svc.caterer_documents 
+           SET file_path = $1, status = 'pending', updated_at = NOW()
+           WHERE id = $2
+           RETURNING *`,
+          [filePath || `/private/documents/${id}/${documentType}.pdf`, existing.rows[0].id]
+        );
+        docRecord = u.rows[0];
+      } else {
+        const ins = await pgPool.query(
+          `INSERT INTO caterer_svc.caterer_documents (caterer_id, document_type, doc_type, file_path, status)
+           VALUES ($1, $2, $2, $3, 'pending')
+           RETURNING *`,
+          [id, documentType, filePath || `/private/documents/${id}/${documentType}.pdf`]
+        );
+        docRecord = ins.rows[0];
+      }
+
+      return reply.status(201).send({
+        success: true,
+        document: docRecord,
+      });
+    } catch (err: any) {
+      req.log.error(err);
+      return reply.status(500).send({ error: 'Failed to upload document' });
     }
   });
 

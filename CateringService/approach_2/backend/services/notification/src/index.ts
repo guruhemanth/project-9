@@ -1,6 +1,7 @@
 import Fastify from 'fastify';
 import fastifyCors from '@fastify/cors';
 import fastifyHelmet from '@fastify/helmet';
+import fastifyWebsocket from '@fastify/websocket';
 import { z } from 'zod';
 import { pgPool } from './db';
 import {
@@ -14,6 +15,8 @@ import {
 } from '@caterconnect/shared';
 import { NotificationDispatcher } from './dispatcher';
 import { OutboxWorker } from './outbox';
+import { registerWebSocketBroadcaster } from './websocket';
+import { registerRemindersRoutes } from './reminders';
 
 const subscribeSchema = z.object({
   endpoint: z.string().url(),
@@ -82,6 +85,10 @@ export function buildNotificationServer() {
 
   server.register(fastifyHelmet, { contentSecurityPolicy: false });
   server.register(fastifyCors, buildCorsOptions(env.ALLOWED_ORIGINS, env.NODE_ENV));
+  server.register(fastifyWebsocket);
+
+  registerWebSocketBroadcaster(server, env.DATABASE_URL);
+  registerRemindersRoutes(server, dispatcher);
 
   // Health & Readiness checks
   server.get('/health', async () => ({ status: 'ok', service: 'notification-service' }));

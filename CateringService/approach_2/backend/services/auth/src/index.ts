@@ -79,6 +79,15 @@ export function buildAuthServer() {
 
   // Register
   server.post('/api/auth/register', async (req, reply) => {
+    const body = req.body as any;
+    if (body?.dpdpConsent === false) {
+      return reply.status(400).send({
+        error: 'ValidationError',
+        message: 'DPDP consent must be accepted to register under DPDP Act 2023',
+        details: { dpdpConsent: ['DPDP consent is mandatory'] },
+      });
+    }
+
     const parseResult = registerSchema.safeParse(req.body);
     if (!parseResult.success) {
       return reply.status(400).send({
