@@ -1,7 +1,11 @@
 import fs from 'fs';
 import path from 'path';
+import { fileURLToPath } from 'url';
 import pg from 'pg';
 import { validateEnv, createDbEnvSchema } from '@caterconnect/shared';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 // Ensure approach_2/.env is loaded with precedence over default fallbacks
 const envPath = path.resolve(__dirname, '../../../../.env');
