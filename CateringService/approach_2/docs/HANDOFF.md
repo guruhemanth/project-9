@@ -3,7 +3,7 @@
 > **Generated for AI Context Synchronization & Status Update**  
 > **Repository Location:** `/home/guru/projects/project-9/CateringService/approach_2`  
 > **Platform Coverage:** Pan-India Multi-State Catering Marketplace (Pilot Hubs: Tirupati, Bengaluru, Hyderabad, Chennai, Mumbai, Delhi NCR)  
-> **Status:** All 12 Milestones + Pan-India Expansion + Strict Authentication Booking Gate Completed, Tested (37/37 passing), Built, and Running Live  
+> **Status:** All 12 Milestones + Pan-India Expansion + Strict Authentication Booking Gate Completed, Built, and Running Live. Verified: 338 tests passing (107 unit + 231 e2e), 0 failures; TypeScript strict mode 0 errors.  
 
 ---
 
@@ -20,7 +20,7 @@
   - `@caterconnect/customer-app` (Port 5173 / Container 3000)
   - `@caterconnect/partner-app` (Port 5174 / Container 3001)
 - **Payments:** Razorpay (Dual payment flows: 100% Full Payment or 25% Advance Deal Lock, HMAC-SHA256 webhooks)
-- **Testing:** Vitest (37/37 automated integration tests passing across all packages)
+- **Testing:** Vitest (338 tests passing across all packages: 107 unit + 231 e2e, 0 failures)
 
 ---
 
@@ -130,7 +130,7 @@ All three accounts are seeded with active sessions and password `Password123!`:
 │           ├── CatererDashboard.tsx      # Kitchen workflow & orders
 │           └── ...
 ├── shared/                       # Shared domain types, Zod schemas, state machine, Indian location constants
-├── database/                     # SQL migration scripts (01_init to 07_pan_india_location.sql)
+├── database/                     # SQL migration scripts (01_init to 16_p1_remediation_schema.sql)
 ├── docs/                         # ARCHITECTURE.md, API_REFERENCE.md, MILESTONES_DELIVERED.md, HANDOFF.md
 ├── scripts/                      # start-all.sh, stop-all.sh
 └── docker-compose.yml            # Container orchestration
@@ -140,14 +140,11 @@ All three accounts are seeded with active sessions and password `Password123!`:
 
 ## 7. Current Project Health & Test Summary
 
-- **Automated Tests:** **37 / 37 passing** (`pnpm -r test`):
-  - `shared`: 4/4
-  - `gateway`: 5/5 (includes blocking unauthenticated customer booking creation)
-  - `auth`: 3/3
-  - `caterer-menu`: 6/6 (includes Pan-India location & regional filter tests)
-  - `booking-order`: 7/7
-  - `payment`: 6/6
-  - `notification`: 3/3
-  - `chat`: 3/3
+- **Automated Tests:** **338 passing, 0 failures**:
+  - Unit (backend/shared): shared 29, gateway 14, auth 10, caterer-menu 10, booking-order 15, payment 18, notification 7, chat 4 = **107 unit tests**
+  - E2E (tests/e2e): 31 files, **231 e2e tests** across tier1/tier2/tier3/tier4
+  - Frontend realtime hooks: customer 5 + partner 5 = **10 frontend tests**
 - **TypeScript Strict Mode:** 0 compilation errors across all packages (`tsc`).
 - **Running Ecosystem:** All services running as daemons via `scripts/start-all.sh`.
+- **Note:** `docs/HANDOFF.md` and `project_status_and_architecture_handoff.md` are duplicate files; keep them in sync.
+- **Untracked / in-progress features (not yet committed):** payouts, reconciliation, invoicing, alerts, reminders, instant booking, legal DPDP, migration `16_p1_remediation_schema.sql`, frontend `tests/` dirs, `websocket.ts`, `useRealtimeUpdates.ts` hooks.
