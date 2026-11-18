@@ -48,6 +48,12 @@ export const PackageList: React.FC<Props> = ({ packages, onAddPackageClick, onTo
               }`}
             >
               <div>
+                {pkg.image_url && (
+                  <div className="mb-3 h-32 w-full rounded-lg overflow-hidden bg-slate-100">
+                    <img src={pkg.image_url} alt={pkg.name} className="h-full w-full object-cover" />
+                  </div>
+                )}
+
                 <div className="flex items-start justify-between">
                   <div className="flex items-center gap-2">
                     <span

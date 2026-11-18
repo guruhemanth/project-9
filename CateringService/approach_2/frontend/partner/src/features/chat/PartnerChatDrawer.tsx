@@ -12,6 +12,7 @@ interface PartnerChatDrawerProps {
     venueAddress?: string;
     eventDate?: string;
     guestCount?: number;
+    city?: string;
   };
   onClose: () => void;
 }
@@ -55,16 +56,9 @@ export const PartnerChatDrawer: React.FC<PartnerChatDrawerProps> = ({
           activeThread = res.thread;
           setThread(activeThread);
         } catch (fetchErr: any) {
-          console.warn('Chat service fetch failed, using partner fallback thread:', fetchErr.message);
-          activeThread = {
-            id: `thread-${bookingId.slice(0, 8)}`,
-            bookingId,
-            customerId: 'customer-1',
-            catererId: user?.id || 'caterer-1',
-            lastMessageAt: new Date().toISOString(),
-            createdAt: new Date().toISOString(),
-          };
-          setThread(activeThread);
+          console.warn('Chat service fetch failed:', fetchErr.message);
+          // Do not create non-UUID thread strings; let the drawer report the issue cleanly or wait for backend creation
+          setThread(null);
         }
       }
 
@@ -122,24 +116,11 @@ export const PartnerChatDrawer: React.FC<PartnerChatDrawerProps> = ({
         senderRole: 'caterer',
       };
 
-      try {
-        const res = await apiFetch<{ message: ChatMessage }>(`/api/chat/threads/${thread.id}/messages`, {
-          method: 'POST',
-          body: JSON.stringify(payload),
-        });
-        setMessages((prev) => [...prev, res.message]);
-      } catch (postErr) {
-        const mockMsg: ChatMessage = {
-          id: `msg-${Date.now()}`,
-          threadId: thread.id,
-          senderId: user?.id || 'caterer-local',
-          senderRole: 'caterer',
-          message: text,
-          isRead: false,
-          createdAt: new Date().toISOString(),
-        };
-        setMessages((prev) => [...prev, mockMsg]);
-      }
+      const res = await apiFetch<{ message: ChatMessage }>(`/api/chat/threads/${thread.id}/messages`, {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      });
+      setMessages((prev) => [...prev, res.message]);
 
       setInputText('');
     } catch (err: any) {
@@ -183,7 +164,7 @@ export const PartnerChatDrawer: React.FC<PartnerChatDrawerProps> = ({
         {bookingSummary && (
           <div className="bg-amber-50 px-4 py-2 border-b border-amber-100 flex items-center justify-between text-xs text-amber-900">
             <span className="font-medium truncate max-w-[240px]">
-              {bookingSummary.venueAddress || 'Tirupati Event Venue'} ({bookingSummary.guestCount || 0} guests)
+              {bookingSummary.venueAddress || (bookingSummary.city ? `${bookingSummary.city} Event Venue` : 'Event Venue')} ({bookingSummary.guestCount || 0} guests)
             </span>
             <span className="text-[11px] text-amber-700 flex items-center gap-1">
               <Clock className="h-3 w-3" /> Host Coordination

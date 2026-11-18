@@ -9,6 +9,7 @@ interface AuthContextType {
   token: string | null;
   loading: boolean;
   login: (token: string, user: UserProfile) => void;
+  updateUser: (user: UserProfile) => void;
   logout: () => void;
   signOut: () => Promise<void>;
   setMockSession: (user: any, profile: any) => void;
@@ -21,6 +22,7 @@ const AuthContext = createContext<AuthContextType>({
   token: null,
   loading: true,
   login: () => {},
+  updateUser: () => {},
   logout: () => {},
   signOut: async () => {},
   setMockSession: () => {},
@@ -54,10 +56,30 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     loadUser();
   }, [token]);
 
+  // Gracefully handle runtime session expiration events fired by apiFetch
+  useEffect(() => {
+    const handleSessionExpired = (event: Event) => {
+      const customEvt = event as CustomEvent<{ message?: string }>;
+      console.warn('Session expired event received:', customEvt.detail?.message);
+      localStorage.removeItem('caterconnect_token');
+      setToken(null);
+      setUser(null);
+    };
+
+    window.addEventListener('caterconnect:session-expired', handleSessionExpired);
+    return () => {
+      window.removeEventListener('caterconnect:session-expired', handleSessionExpired);
+    };
+  }, []);
+
   const login = (newToken: string, newUser: UserProfile) => {
     localStorage.setItem('caterconnect_token', newToken);
     setToken(newToken);
     setUser(newUser);
+  };
+
+  const updateUser = (updatedUser: UserProfile) => {
+    setUser(updatedUser);
   };
 
   const logout = () => {
@@ -89,6 +111,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         token,
         loading,
         login,
+        updateUser,
         logout,
         signOut,
         setMockSession,

@@ -66,7 +66,7 @@ export const BlackoutDateManager: React.FC<Props> = ({ catererId }) => {
         </div>
       </div>
       <p className="mb-4 text-xs text-slate-500">
-        Mark dates when your catering team is unavailable in Tirupati (festivals, leave, or private events).
+        Mark dates when your catering team is unavailable for booking (festivals, leave, or private events).
       </p>
 
       {error && (

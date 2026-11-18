@@ -7,24 +7,29 @@ import {
   IndianRupee,
   RefreshCw,
   AlertCircle,
+  Activity,
 } from 'lucide-react';
 import { AdminAnalyticsCards } from './components/AdminAnalyticsCards';
 import { PendingCatererQueue } from './components/PendingCatererQueue';
 import { AdminBookingsList } from './components/AdminBookingsList';
 import { AdminSettlementsList } from './components/AdminSettlementsList';
 import { CommissionSettingsCard } from './components/CommissionSettingsCard';
+import { SystemOpsDashboard } from './components/SystemOpsDashboard';
 import {
   fetchAdminAnalytics,
   fetchAdminCaterers,
   updateCatererStatus,
   fetchAdminBookings,
   adminCancelBooking,
+  adminIssueRefund,
   fetchAdminSettlements,
   disburseSettlement,
+  holdSettlement,
+  releaseSettlement,
 } from './api';
 import type { PlatformAnalytics, AdminCaterer, CatererSettlement, Booking } from '@caterconnect/shared';
 
-type AdminTab = 'analytics' | 'caterers' | 'bookings' | 'settlements' | 'settings';
+type AdminTab = 'analytics' | 'caterers' | 'bookings' | 'settlements' | 'settings' | 'ops';
 
 export const AdminDashboard: React.FC = () => {
   const [activeTab, setActiveTab] = useState<AdminTab>('analytics');
@@ -52,114 +57,40 @@ export const AdminDashboard: React.FC = () => {
         fetchAdminSettlements(),
       ]);
 
-      if (aRes.status === 'fulfilled') {
+      if (aRes.status === 'fulfilled' && aRes.value?.analytics) {
         setAnalytics(aRes.value.analytics);
       } else {
-        // Fallback demo metrics if offline
         setAnalytics({
-          totalGMVPaise: 6125000,
-          totalCommissionPaise: 918750,
-          totalDisbursedPaise: 393750,
-          pendingPayoutsPaise: 525000,
-          totalBookingsCount: 4,
-          paidBookingsCount: 2,
-          pendingSettlementCount: 1,
-          settledCount: 1,
-          totalCaterersCount: 2,
-          approvedCaterersCount: 1,
-          pendingCaterersCount: 1,
+          totalGMVPaise: 0,
+          totalCommissionPaise: 0,
+          totalDisbursedPaise: 0,
+          pendingPayoutsPaise: 0,
+          totalBookingsCount: 0,
+          paidBookingsCount: 0,
+          pendingSettlementCount: 0,
+          settledCount: 0,
+          totalCaterersCount: 0,
+          approvedCaterersCount: 0,
+          pendingCaterersCount: 0,
         });
       }
 
-      if (cRes.status === 'fulfilled') {
+      if (cRes.status === 'fulfilled' && Array.isArray(cRes.value?.caterers)) {
         setCaterers(cRes.value.caterers);
       } else {
-        setCaterers([
-          {
-            id: 'd0000000-0000-0000-0000-000000000001',
-            ownerId: 'c0000000-0000-0000-0000-000000000002',
-            businessName: 'Sri Venkateswara Catering Services',
-            description: 'Authentic Andhra & South Indian traditional feasts in Tirupati.',
-            city: 'Tirupati',
-            serviceAreas: ['Alipiri', 'MR Palli', 'Bhavani Nagar', 'Chandragiri'],
-            cuisines: ['andhra', 'south_indian'],
-            fssaiNumber: '10123000004567',
-            gstNumber: '37AAAAA0000A1Z5',
-            status: 'approved',
-            rejectionReason: null,
-            avgRating: 4.8,
-            reviewCount: 12,
-            createdAt: new Date().toISOString(),
-            updatedAt: new Date().toISOString(),
-          },
-          {
-            id: 'd0000000-0000-0000-0000-000000000004',
-            ownerId: 'c0000000-0000-0000-0000-000000000004',
-            businessName: 'Rayalaseema Ruchulu Caterers',
-            description: 'Spicy traditional feast & ragi mudda catering in Tirupati.',
-            city: 'Tirupati',
-            serviceAreas: ['AIR Bypass Road', 'Korlagunta'],
-            cuisines: ['rayalaseema', 'andhra'],
-            fssaiNumber: '10124000008899',
-            gstNumber: null,
-            status: 'pending',
-            rejectionReason: null,
-            avgRating: 0,
-            reviewCount: 0,
-            createdAt: new Date().toISOString(),
-            updatedAt: new Date().toISOString(),
-          },
-        ]);
+        setCaterers([]);
       }
 
-      if (bRes.status === 'fulfilled') {
+      if (bRes.status === 'fulfilled' && Array.isArray(bRes.value?.bookings)) {
         setBookings(bRes.value.bookings);
       } else {
-        setBookings([
-          {
-            id: 'b0000000-0000-0000-0000-000000000001',
-            customerId: 'c0000000-0000-0000-0000-000000000001',
-            customerName: 'Kalyan Chakravarthy',
-            customerPhone: '+919876543210',
-            catererId: 'd0000000-0000-0000-0000-000000000001',
-            catererBusinessName: 'Sri Venkateswara Catering Services',
-            packageName: 'Grand Tirupati Wedding Feast',
-            eventDate: '2026-11-20',
-            eventTime: '12:30:00',
-            guestCount: 100,
-            venueAddress: 'MR Palli Community Hall, Tirupati',
-            city: 'Tirupati',
-            status: 'accepted',
-            totalAmountPaise: 3500000,
-            commissionPct: 15.0,
-            commissionAmountPaise: 525000,
-            amountPaidPaise: 0,
-            balanceDuePaise: 3500000,
-            createdAt: new Date().toISOString(),
-          },
-        ]);
+        setBookings([]);
       }
 
-      if (sRes.status === 'fulfilled') {
+      if (sRes.status === 'fulfilled' && Array.isArray(sRes.value?.settlements)) {
         setSettlements(sRes.value.settlements);
       } else {
-        setSettlements([
-          {
-            id: 'set-demo-01',
-            bookingId: 'b0000000-0000-0000-0000-000000000002',
-            catererId: 'd0000000-0000-0000-0000-000000000001',
-            catererBusinessName: 'Sri Venkateswara Catering Services',
-            grossAmountPaise: 2625000,
-            commissionPct: 15.0,
-            commissionAmountPaise: 393750,
-            netPayoutPaise: 2231250,
-            status: 'settled',
-            utrReference: 'UTR_HDFC_20261016_778899',
-            settledAt: new Date(Date.now() - 86400000 * 18).toISOString(),
-            createdAt: new Date().toISOString(),
-            updatedAt: new Date().toISOString(),
-          },
-        ]);
+        setSettlements([]);
       }
     } catch (err: any) {
       setError(err.message || 'Failed to load admin metrics');
@@ -191,12 +122,44 @@ export const AdminDashboard: React.FC = () => {
     }
   };
 
+  const handleIssueRefund = async (
+    bookingId: string,
+    refundAmountPaise: number,
+    reason: string,
+    notes?: string
+  ) => {
+    try {
+      await adminIssueRefund(bookingId, refundAmountPaise, reason, notes);
+      await loadAllAdminData(true);
+    } catch (err: any) {
+      alert(`Refund failed: ${err.message}`);
+    }
+  };
+
   const handleDisburse = async (settlementId: string, utrReference: string) => {
     try {
       await disburseSettlement(settlementId, utrReference);
       await loadAllAdminData(true);
     } catch (err: any) {
       alert(`Disbursal failed: ${err.message}`);
+    }
+  };
+
+  const handleHoldSettlement = async (settlementId: string, reason: string) => {
+    try {
+      await holdSettlement(settlementId, reason);
+      await loadAllAdminData(true);
+    } catch (err: any) {
+      alert(`Failed to hold payout: ${err.message}`);
+    }
+  };
+
+  const handleReleaseSettlement = async (settlementId: string, notes?: string) => {
+    try {
+      await releaseSettlement(settlementId, notes);
+      await loadAllAdminData(true);
+    } catch (err: any) {
+      alert(`Failed to release payout hold: ${err.message}`);
     }
   };
 
@@ -212,7 +175,7 @@ export const AdminDashboard: React.FC = () => {
             <h1 className="text-xl sm:text-2xl font-black text-slate-900">Admin Operations Center</h1>
           </div>
           <p className="text-xs text-slate-500 mt-0.5">
-            Super-dashboard: Tirupati caterer verification, 15% platform commission ledger, bookings, and payout settlements.
+            Super-dashboard: Pan-India caterer verification, platform commission ledger, bookings, and payout settlements.
           </p>
         </div>
 
@@ -307,6 +270,18 @@ export const AdminDashboard: React.FC = () => {
           <Percent className="h-4 w-4" />
           <span>Commission Rules</span>
         </button>
+
+        <button
+          onClick={() => setActiveTab('ops')}
+          className={`flex items-center gap-2 px-4 py-2.5 text-xs sm:text-sm font-bold border-b-2 transition whitespace-nowrap ${
+            activeTab === 'ops'
+              ? 'border-purple-700 text-purple-800 bg-purple-50/50 rounded-t-lg'
+              : 'border-transparent text-slate-600 hover:text-slate-900'
+          }`}
+        >
+          <Activity className="h-4 w-4" />
+          <span>System Ops & Node Health</span>
+        </button>
       </div>
 
       {/* Tab Panels */}
@@ -387,6 +362,7 @@ export const AdminDashboard: React.FC = () => {
           bookings={bookings}
           loading={loading}
           onCancelDispute={handleCancelDispute}
+          onIssueRefund={handleIssueRefund}
         />
       )}
 
@@ -395,14 +371,21 @@ export const AdminDashboard: React.FC = () => {
           settlements={settlements}
           loading={loading}
           onDisburse={handleDisburse}
+          onHold={handleHoldSettlement}
+          onRelease={handleReleaseSettlement}
         />
       )}
 
       {activeTab === 'settings' && (
         <CommissionSettingsCard
           initialCommission={commissionPct}
+          caterers={caterers}
           onUpdated={(newVal) => setCommissionPct(newVal)}
         />
+      )}
+
+      {activeTab === 'ops' && (
+        <SystemOpsDashboard />
       )}
     </div>
   );

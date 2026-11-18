@@ -1,0 +1,27 @@
+{
+  "name": "@caterconnect/e2e",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@caterconnect/shared": "workspace:*",
+    "@caterconnect/api-gateway": "workspace:*",
+    "@caterconnect/auth-service": "workspace:*",
+    "@caterconnect/caterer-menu-service": "workspace:*",
+    "@caterconnect/booking-order-service": "workspace:*",
+    "@caterconnect/payment-service": "workspace:*",
+    "@caterconnect/notification-service": "workspace:*",
+    "@caterconnect/chat-service": "workspace:*",
+    "fastify": "^5.2.0",
+    "pg": "^8.23.1",
+    "dotenv": "^16.4.5"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.1",
+    "@types/pg": "^8.23.1",
+    "typescript": "^5.7.2",
+    "vitest": "^3.0.0"
+  }
+}

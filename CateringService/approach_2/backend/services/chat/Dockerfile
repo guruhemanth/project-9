@@ -14,4 +14,4 @@ RUN pnpm --filter @caterconnect/chat-service run build
 
 EXPOSE 4006
 ENV NODE_ENV=production
-CMD ["node", "backend/services/chat/dist/index.js"]
+CMD ["./node_modules/.bin/tsx", "backend/services/chat/src/index.ts"]

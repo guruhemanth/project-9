@@ -16,4 +16,4 @@ RUN pnpm --filter @caterconnect/auth-service run build
 
 EXPOSE 4001
 ENV NODE_ENV=production
-CMD ["node", "backend/services/auth/dist/index.js"]
+CMD ["./node_modules/.bin/tsx", "backend/services/auth/src/index.ts"]

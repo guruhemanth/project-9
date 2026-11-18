@@ -3,6 +3,7 @@ import { useNavigate, useLocation, Link } from 'react-router-dom';
 import { loginApi } from '../api';
 import { useAuth } from '@/lib/auth/AuthContext';
 import { Lock, Mail, AlertCircle } from 'lucide-react';
+import { GoogleSignInButton } from './GoogleSignInButton';
 
 export const LoginPage: React.FC = () => {
   const [email, setEmail] = useState('');
@@ -12,14 +13,28 @@ export const LoginPage: React.FC = () => {
   const { login } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
+  const [sessionNotice, setSessionNotice] = useState<string | null>(() => {
+    const fromState = (location.state as any)?.sessionMessage;
+    if (fromState) return fromState;
+    if (typeof window !== 'undefined') {
+      const stored = sessionStorage.getItem('caterconnect_session_expired');
+      if (stored) {
+        sessionStorage.removeItem('caterconnect_session_expired');
+        return stored;
+      }
+    }
+    return null;
+  });
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
+    setSessionNotice(null);
     setSubmitting(true);
 
     try {
       const res = await loginApi({ email, password });
+      sessionStorage.removeItem('caterconnect_session_expired');
       login(res.token, res.user);
 
       const from = (location.state as any)?.from?.pathname;
@@ -40,13 +55,27 @@ export const LoginPage: React.FC = () => {
       <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-6 shadow-sm sm:p-8">
         <div className="mb-6 text-center">
           <h2 className="text-2xl font-bold text-slate-900">Sign In to CaterConnect</h2>
-          <p className="mt-1 text-sm text-slate-600">Event Host & Customer Portal for Tirupati</p>
+          <p className="mt-1 text-sm text-slate-600">Event Host &amp; Customer Portal</p>
         </div>
 
+        {(sessionNotice || (location.state as any)?.sessionExpired) && (
+          <div className="mb-4 flex items-start gap-2.5 rounded-xl border border-amber-300 bg-amber-50 p-3.5 text-xs text-amber-900 shadow-2xs">
+            <Lock className="h-4 w-4 shrink-0 text-amber-600 mt-0.5" />
+            <div>
+              <p className="font-semibold text-amber-950">Session Expired</p>
+              <p className="mt-0.5 text-amber-800">
+                {sessionNotice ||
+                  (location.state as any)?.sessionMessage ||
+                  'Your session has expired. Please sign in again to continue where you left off.'}
+              </p>
+            </div>
+          </div>
+        )}
+
         {error && (
-          <div className="mb-4 flex items-center gap-2 rounded-lg bg-red-50 p-3 text-sm text-red-700">
-            <AlertCircle className="h-4 w-4 shrink-0" />
-            <span>{error}</span>
+          <div className="mb-4 flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 p-3 text-xs text-red-700">
+            <AlertCircle className="h-4 w-4 shrink-0 mt-0.5" />
+            <span className="leading-relaxed">{error}</span>
           </div>
         )}
 
@@ -89,6 +118,14 @@ export const LoginPage: React.FC = () => {
             {submitting ? 'Signing in...' : 'Sign In'}
           </button>
         </form>
+
+        <div className="my-5 flex items-center gap-3">
+          <div className="h-px flex-1 bg-slate-200" />
+          <span className="text-xs font-medium uppercase tracking-wider text-slate-600">OR</span>
+          <div className="h-px flex-1 bg-slate-200" />
+        </div>
+
+        <GoogleSignInButton onError={(msg) => setError(msg)} />
 
         <p className="mt-6 text-center text-xs text-slate-600">
           Don't have an account?{' '}

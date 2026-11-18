@@ -1,7 +1,7 @@
 {
-  "name": "CaterConnect Tirupati",
+  "name": "CaterConnect",
   "short_name": "CaterConnect",
-  "description": "Two-sided catering marketplace for Tirupati, Andhra Pradesh",
+  "description": "Pan-India catering marketplace connecting event hosts with verified caterers",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#ffffff",

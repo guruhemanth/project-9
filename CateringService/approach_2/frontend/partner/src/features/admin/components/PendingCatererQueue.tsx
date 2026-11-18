@@ -32,7 +32,7 @@ export const PendingCatererQueue: React.FC<Props> = ({ caterers, onStatusChange 
               Pending Caterer Verifications ({pendingList.length})
             </h2>
             <p className="text-xs text-slate-500">
-              Review FSSAI registrations and approve caterers to make them publicly visible in Tirupati.
+              Review FSSAI registrations and approve caterers to make them publicly visible to customers.
             </p>
           </div>
         </div>

@@ -1,5 +1,13 @@
 import { apiFetch } from '@/lib/api-client';
-import type { PlatformAnalytics, AdminCaterer, CatererSettlement, Booking } from '@caterconnect/shared';
+import type {
+  PlatformAnalytics,
+  AdminCaterer,
+  CatererSettlement,
+  Booking,
+  OpsNodesResponse,
+  OpsLogsResponse,
+  ContainerInfo,
+} from '@caterconnect/shared';
 
 export async function fetchAdminAnalytics(): Promise<{ analytics: PlatformAnalytics }> {
   return apiFetch<{ analytics: PlatformAnalytics }>('/api/admin/analytics');
@@ -42,6 +50,18 @@ export async function adminCancelBooking(
   });
 }
 
+export async function adminIssueRefund(
+  bookingId: string,
+  refundAmountPaise: number,
+  reason: string,
+  notes?: string
+): Promise<{ success: boolean; booking: any; refundId: string; refundAmountPaise: number; totalRefundAmountPaise: number }> {
+  return apiFetch(`/api/admin/bookings/${bookingId}/refund`, {
+    method: 'POST',
+    body: JSON.stringify({ refundAmountPaise, reason, notes }),
+  });
+}
+
 export async function fetchAdminSettlements(status?: string): Promise<{
   settlements: (CatererSettlement & {
     catererBusinessName?: string;
@@ -63,6 +83,58 @@ export async function disburseSettlement(
   });
 }
 
+export async function holdSettlement(
+  settlementId: string,
+  reason: string
+): Promise<{ success: boolean; settlement: CatererSettlement }> {
+  return apiFetch(`/api/admin/settlements/${settlementId}/hold`, {
+    method: 'POST',
+    body: JSON.stringify({ reason }),
+  });
+}
+
+export async function releaseSettlement(
+  settlementId: string,
+  notes?: string
+): Promise<{ success: boolean; settlement: CatererSettlement }> {
+  return apiFetch(`/api/admin/settlements/${settlementId}/release`, {
+    method: 'POST',
+    body: JSON.stringify({ notes }),
+  });
+}
+
 export async function updateCommissionPct(_pct: number): Promise<boolean> {
   return true;
+}
+
+export async function updateCatererCommission(
+  catererId: string,
+  commissionPct: number
+): Promise<{ caterer: any }> {
+  return apiFetch(`/api/caterers/${catererId}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ commissionPct }),
+  });
+}
+
+// System Ops & Node Health Endpoints
+export async function fetchOpsNodesMetrics(): Promise<OpsNodesResponse> {
+  return apiFetch<OpsNodesResponse>('/api/admin/ops/nodes');
+}
+
+export async function fetchOpsContainers(): Promise<{ containers: ContainerInfo[]; source: string }> {
+  return apiFetch<{ containers: ContainerInfo[]; source: string }>('/api/admin/ops/containers');
+}
+
+export async function fetchOpsLogs(
+  container: string,
+  tail = 100,
+  filter?: string
+): Promise<OpsLogsResponse> {
+  const params = new URLSearchParams({
+    container,
+    tail: String(tail),
+  });
+  if (filter) params.append('filter', filter);
+  return apiFetch<OpsLogsResponse>(`/api/admin/ops/logs?${params.toString()}`);
 }

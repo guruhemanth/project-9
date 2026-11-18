@@ -7,6 +7,8 @@ import { AppLayout } from './components/layout/AppLayout';
 import { LoginPage } from './features/auth/components/LoginPage';
 import { RegisterPage } from './features/auth/components/RegisterPage';
 import { CatererDashboard } from './features/caterer/CatererDashboard';
+import { CatererPoliciesPage } from './features/caterer/CatererPoliciesPage';
+import { PartnerChatHub } from './features/chat/PartnerChatHub';
 import { AdminDashboard } from './features/admin/AdminDashboard';
 
 const PartnerHomeRedirect: React.FC = () => {
@@ -43,6 +45,26 @@ export default function App() {
                 <RequireAuth>
                   <RequireRole roles={['caterer']}>
                     <CatererDashboard />
+                  </RequireRole>
+                </RequireAuth>
+              }
+            />
+            <Route
+              path="/caterer/chat"
+              element={
+                <RequireAuth>
+                  <RequireRole roles={['caterer']}>
+                    <PartnerChatHub />
+                  </RequireRole>
+                </RequireAuth>
+              }
+            />
+            <Route
+              path="/caterer/policies"
+              element={
+                <RequireAuth>
+                  <RequireRole roles={['caterer']}>
+                    <CatererPoliciesPage />
                   </RequireRole>
                 </RequireAuth>
               }

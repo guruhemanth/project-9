@@ -14,4 +14,4 @@ RUN pnpm --filter @caterconnect/booking-order-service run build
 
 EXPOSE 4003
 ENV NODE_ENV=production
-CMD ["node", "backend/services/booking-order/dist/index.js"]
+CMD ["./node_modules/.bin/tsx", "backend/services/booking-order/src/index.ts"]

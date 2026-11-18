@@ -5,8 +5,10 @@ import { AppLayout } from './components/layout/AppLayout';
 import { CustomerHome } from './features/customer/CustomerHome';
 import { CatererDetailView } from './features/customer/components/CatererDetailView';
 import { CustomerBookingsList } from './features/customer/components/CustomerBookingsList';
+import { CustomerChatHub } from './features/chat/CustomerChatHub';
 import { LoginPage } from './features/auth/components/LoginPage';
 import { RegisterPage } from './features/auth/components/RegisterPage';
+import { TermsPage, PrivacyPage, RefundPolicyPage } from './features/legal';
 
 export default function App() {
   return (
@@ -19,6 +21,9 @@ export default function App() {
             <Route path="/caterer-profile/:id" element={<CatererDetailView />} />
             <Route path="/login" element={<LoginPage />} />
             <Route path="/register" element={<RegisterPage />} />
+            <Route path="/terms" element={<TermsPage />} />
+            <Route path="/privacy" element={<PrivacyPage />} />
+            <Route path="/refund-policy" element={<RefundPolicyPage />} />
 
             {/* Customer Protected Bookings Area */}
             <Route
@@ -26,6 +31,14 @@ export default function App() {
               element={
                 <RequireAuth>
                   <CustomerBookingsList />
+                </RequireAuth>
+              }
+            />
+            <Route
+              path="/customer/messages"
+              element={
+                <RequireAuth>
+                  <CustomerChatHub />
                 </RequireAuth>
               }
             />

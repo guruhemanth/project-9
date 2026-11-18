@@ -4,5 +4,6 @@ packages:
   - 'frontend/partner'
   - 'backend/gateway'
   - 'backend/services/*'
+  - 'tests/e2e'
 allowBuilds:
   esbuild: true

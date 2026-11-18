@@ -1,29 +1,78 @@
+import crypto from 'node:crypto';
 import Fastify from 'fastify';
 import fastifyCors from '@fastify/cors';
+import fastifyHelmet from '@fastify/helmet';
 import { pgPool } from './db';
-import { catererOnboardingSchema, packageSchema, blackoutDateSchema, CatererStatus } from '@caterconnect/shared';
+import {
+  catererOnboardingSchema,
+  catererBankDetailsSchema,
+  packageSchema,
+  blackoutDateSchema,
+  CatererStatus,
+  validateEnv,
+  createDbEnvSchema,
+  buildCorsOptions,
+  registerCentralizedErrorHandler,
+  loggerRedactionConfig,
+  getAuthenticatedUser,
+} from '@caterconnect/shared';
 
 export function buildCatererServer() {
-  const server = Fastify({ logger: false });
+  const env = validateEnv(createDbEnvSchema(), process.env);
+  const server = Fastify({
+    logger: {
+      redact: loggerRedactionConfig,
+    },
+    bodyLimit: 15728640, // 15MB payload limit for dish photos and media
+    connectionTimeout: 10000,
+    requestTimeout: 15000,
+  });
 
-  server.register(fastifyCors, { origin: true });
+  registerCentralizedErrorHandler(server, 'caterer-menu-service');
 
-  // Health check
+  server.addHook('onClose', async () => {
+    if (!(pgPool as any).ending) {
+      await pgPool.end();
+    }
+  });
+
+  server.register(fastifyHelmet, { contentSecurityPolicy: false });
+  server.register(fastifyCors, buildCorsOptions(env.ALLOWED_ORIGINS, env.NODE_ENV));
+
+  // Helper to assert caterer ownership or admin role
+  async function assertCatererOwner(catererId: string, actorId: string, actorRole: string): Promise<boolean> {
+    if (actorRole === 'admin') return true;
+    const res = await pgPool.query('SELECT owner_id FROM caterer_svc.caterers WHERE id = $1', [catererId]);
+    if (res.rows.length === 0) return false;
+    return res.rows[0].owner_id === actorId;
+  }
+
+  // Health & Readiness checks
   server.get('/health', async () => ({ status: 'ok', service: 'caterer-menu-service' }));
+  server.get('/ready', async (_req, reply) => {
+    try {
+      await pgPool.query('SELECT 1');
+      return { status: 'ready', database: 'connected', service: 'caterer-menu-service' };
+    } catch (err: any) {
+      return reply.status(503).send({ status: 'not_ready', database: 'disconnected', service: 'caterer-menu-service' });
+    }
+  });
 
-  // List approved caterers with optional filters (cuisine, min/max budget)
+  // List approved caterers with optional filters (cuisine, min/max budget, city, state, search)
   server.get('/api/caterers', async (req, reply) => {
     const query = req.query as {
       cuisine?: string;
       maxPrice?: string;
       city?: string;
+      state?: string;
+      search?: string;
     };
 
     let sql = `
       SELECT 
-        c.id, c.business_name, c.description, c.city, c.service_areas,
+        c.id, c.business_name, c.description, c.city, c.state, c.pincode, c.address, c.service_areas,
         c.cuisines, c.fssai_number, c.gst_number, c.status, c.avg_rating,
-        c.review_count, c.created_at,
+        c.review_count, c.created_at, c.min_guests, c.max_guests, c.lead_time_days, c.allows_custom_combo, c.instant_booking_enabled,
         COALESCE(
           json_agg(
             json_build_object(
@@ -43,14 +92,30 @@ export function buildCatererServer() {
 
     const params: any[] = [];
 
-    if (query.cuisine) {
+    if (query.cuisine && query.cuisine !== 'all') {
       params.push(query.cuisine);
       sql += ` AND $${params.length} = ANY(c.cuisines)`;
     }
 
-    if (query.city) {
-      params.push(query.city);
-      sql += ` AND LOWER(c.city) = LOWER($${params.length})`;
+    if (query.city && query.city.toLowerCase() !== 'all' && query.city.toLowerCase() !== 'all india') {
+      params.push(query.city.trim());
+      sql += ` AND (
+        LOWER(c.city) = LOWER($${params.length})
+        OR LOWER(c.state) = LOWER($${params.length})
+        OR EXISTS (
+          SELECT 1 FROM unnest(c.service_areas) area
+          WHERE LOWER(area) LIKE '%' || LOWER($${params.length}) || '%'
+        )
+      )`;
+    }
+
+    if (query.search && query.search.trim()) {
+      params.push(`%${query.search.trim().toLowerCase()}%`);
+      sql += ` AND (
+        LOWER(c.business_name) LIKE $${params.length}
+        OR LOWER(COALESCE(c.description, '')) LIKE $${params.length}
+        OR LOWER(c.city) LIKE $${params.length}
+      )`;
     }
 
     sql += ` GROUP BY c.id ORDER BY c.avg_rating DESC, c.created_at DESC`;
@@ -62,6 +127,9 @@ export function buildCatererServer() {
       businessName: row.business_name,
       description: row.description,
       city: row.city,
+      state: row.state,
+      pincode: row.pincode,
+      address: row.address,
       serviceAreas: row.service_areas,
       cuisines: row.cuisines,
       fssaiNumber: row.fssai_number,
@@ -69,6 +137,10 @@ export function buildCatererServer() {
       status: row.status,
       avgRating: parseFloat(row.avg_rating || '0'),
       reviewCount: row.review_count,
+      minGuests: row.min_guests || 25,
+      maxGuests: row.max_guests || 2000,
+      allowsCustomCombo: row.allows_custom_combo ?? true,
+      instantBookingEnabled: row.instant_booking_enabled ?? false,
       packages: row.packages,
       createdAt: row.created_at,
     }));
@@ -76,73 +148,288 @@ export function buildCatererServer() {
     return reply.send({ caterers });
   });
 
-  // Get caterer details by ID (including packages and items)
-  server.get('/api/caterers/:id', async (req, reply) => {
+  // Get distinct active operating cities
+  server.get('/api/caterers/cities', async (req, reply) => {
     try {
-      const { id } = req.params as { id: string };
-
-      const catererRes = await pgPool.query(
-        'SELECT * FROM caterer_svc.caterers WHERE id = $1 LIMIT 1',
-        [id]
-      );
-
-      if (catererRes.rows.length === 0) {
-        return reply.status(404).send({ error: 'Caterer not found' });
-      }
-
-      const c = catererRes.rows[0];
-
-      const packagesRes = await pgPool.query(
-        `SELECT p.id, p.name, p.description, p.price_per_plate_paise, p.min_guests, p.max_guests,
-          COALESCE(
-            json_agg(
-              json_build_object(
-                'id', pi.id,
-                'name', pi.name,
-                'category', pi.category
-              )
-            ) FILTER (WHERE pi.id IS NOT NULL), '[]'
-          ) as items
-         FROM caterer_svc.packages p
-         LEFT JOIN caterer_svc.package_items pi ON p.id = pi.package_id
-         WHERE p.caterer_id = $1
-         GROUP BY p.id, p.name, p.description, p.price_per_plate_paise, p.min_guests, p.max_guests
-         ORDER BY p.price_per_plate_paise ASC`,
-        [id]
-      );
-
-      return reply.send({
-        caterer: {
-          id: c.id,
-          ownerId: c.owner_id,
-          businessName: c.business_name,
-          description: c.description,
-          city: c.city,
-          serviceAreas: c.service_areas,
-          cuisines: c.cuisines,
-          fssaiNumber: c.fssai_number,
-          gstNumber: c.gst_number,
-          status: c.status,
-          avgRating: parseFloat(c.avg_rating || '0'),
-          reviewCount: c.review_count,
-          packages: packagesRes.rows.map((p) => ({
-            id: p.id,
-            name: p.name,
-            description: p.description,
-            pricePerPlatePaise: p.price_per_plate_paise,
-            minGuests: p.min_guests,
-            maxGuests: p.max_guests,
-            items: p.items,
-          })),
-        },
-      });
+      const result = await pgPool.query(`
+        SELECT DISTINCT city, state, count(*)::int as count
+        FROM caterer_svc.caterers
+        WHERE status = 'approved'
+        GROUP BY city, state
+        ORDER BY count DESC, city ASC
+      `);
+      return reply.send({ cities: result.rows });
     } catch (err: any) {
-      console.error('GET /caterers/:id error:', err);
-      return reply.status(500).send({ error: err.message });
+      req.log.error(err);
+      return reply.status(500).send({ error: 'Failed to retrieve active cities' });
     }
   });
 
-  // Caterer Onboarding / Registration
+  // Helper to format full caterer profile with packages & menu items
+  async function getFullCatererProfile(c: any) {
+    const id = c.id;
+    const packagesRes = await pgPool.query(
+      `SELECT p.id, p.name, p.description, p.price_per_plate_paise, p.min_guests, p.max_guests, p.is_active, p.image_url,
+        COALESCE(
+          json_agg(
+            json_build_object(
+              'id', pi.id,
+              'name', pi.name,
+              'category', pi.category,
+              'image_url', pi.image_url
+            )
+          ) FILTER (WHERE pi.id IS NOT NULL), '[]'
+        ) as items
+       FROM caterer_svc.packages p
+       LEFT JOIN caterer_svc.package_items pi ON p.id = pi.package_id
+       WHERE p.caterer_id = $1
+       GROUP BY p.id, p.name, p.description, p.price_per_plate_paise, p.min_guests, p.max_guests, p.is_active, p.image_url
+       ORDER BY p.price_per_plate_paise ASC`,
+      [id]
+    );
+
+    const packages = packagesRes.rows.map((row) => ({
+      id: row.id,
+      caterer_id: id,
+      name: row.name,
+      description: row.description,
+      price_per_plate: row.price_per_plate_paise,
+      min_guests: row.min_guests,
+      max_guests: row.max_guests,
+      is_veg: true,
+      is_active: row.is_active,
+      image_url: row.image_url,
+      imageUrl: row.image_url,
+      items: row.items,
+    }));
+
+    const menuItemsRes = await pgPool.query(
+      `SELECT id, name, category, price_paise, is_veg, description, is_available, image_url
+       FROM caterer_svc.menu_items
+       WHERE caterer_id = $1
+       ORDER BY category ASC, name ASC`,
+      [id]
+    );
+
+    const menuItems = menuItemsRes.rows.map((row) => ({
+      id: row.id,
+      name: row.name,
+      category: row.category,
+      pricePaise: row.price_paise,
+      price_paise: row.price_paise,
+      isVeg: row.is_veg,
+      is_veg: row.is_veg,
+      description: row.description,
+      isAvailable: row.is_available,
+      is_available: row.is_available,
+      imageUrl: row.image_url,
+      image_url: row.image_url,
+    }));
+
+    return {
+      caterer: {
+        id: c.id,
+        owner_id: c.owner_id,
+        business_name: c.business_name,
+        description: c.description,
+        city: c.city,
+        state: c.state,
+        pincode: c.pincode,
+        address: c.address,
+        service_areas: c.service_areas || [],
+        cuisines: c.cuisines || [],
+        fssai_number: c.fssai_number,
+        gst_number: c.gst_number,
+        status: c.status,
+        rejection_reason: c.rejection_reason,
+        avg_rating: c.avg_rating || 4.8,
+        review_count: c.review_count || 0,
+        min_guests: c.min_guests || 25,
+        max_guests: c.max_guests || 2000,
+        lead_time_days: c.lead_time_days || 2,
+        allows_custom_combo: c.allows_custom_combo ?? true,
+        instant_booking_enabled: c.instant_booking_enabled ?? false,
+        commission_pct: c.commission_pct || 15.0,
+        bank_account_holder_name: c.bank_account_holder_name,
+        bank_account_number: c.bank_account_number,
+        bank_ifsc: c.bank_ifsc,
+        bank_name: c.bank_name,
+        upi_id: c.upi_id,
+        bank_cheque_url: c.bank_cheque_url,
+        bank_verified: c.bank_verified ?? false,
+        bank_updated_at: c.bank_updated_at,
+        created_at: c.created_at,
+        updated_at: c.updated_at,
+      },
+      packages,
+      menuItems,
+    };
+  }
+
+  // Get current logged-in caterer profile (owner)
+  server.get('/api/caterers/me', async (req, reply) => {
+    try {
+      const authUser = getAuthenticatedUser(req);
+      if (!authUser) {
+        return reply.status(401).send({ error: 'Unauthorized: Authentication required' });
+      }
+
+      const catererRes = await pgPool.query(
+        'SELECT * FROM caterer_svc.caterers WHERE owner_id = $1 LIMIT 1',
+        [authUser.userId]
+      );
+
+      if (catererRes.rows.length === 0) {
+        return reply.status(404).send({ error: 'Caterer profile not found for authenticated user' });
+      }
+
+      const fullData = await getFullCatererProfile(catererRes.rows[0]);
+      return reply.send(fullData);
+    } catch (err: any) {
+      req.log.error(err);
+      return reply.status(500).send({ error: 'Failed to retrieve caterer profile' });
+    }
+  });
+
+  // Get caterer by owner ID
+  server.get('/api/caterers/by-owner/:ownerId', async (req, reply) => {
+    try {
+      const { ownerId } = req.params as { ownerId: string };
+      if (!/^[0-9a-fA-F-]{36}$/.test(ownerId)) {
+        return reply.status(400).send({ error: 'Invalid owner ID format' });
+      }
+
+      const catererRes = await pgPool.query(
+        'SELECT * FROM caterer_svc.caterers WHERE owner_id = $1 LIMIT 1',
+        [ownerId]
+      );
+
+      if (catererRes.rows.length === 0) {
+        return reply.status(404).send({ error: 'Caterer profile not found for owner' });
+      }
+
+      const fullData = await getFullCatererProfile(catererRes.rows[0]);
+      return reply.send(fullData);
+    } catch (err: any) {
+      req.log.error(err);
+      return reply.status(500).send({ error: 'Failed to retrieve caterer profile by owner' });
+    }
+  });
+
+  // Get single caterer detail by ID with packages and menu items
+  server.get('/api/caterers/:id', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    if (!/^[0-9a-fA-F-]{36}$/.test(id)) {
+      return reply.status(404).send({ error: 'Caterer not found' });
+    }
+
+    const catererRes = await pgPool.query(
+      'SELECT * FROM caterer_svc.caterers WHERE id = $1 LIMIT 1',
+      [id]
+    );
+
+    if (catererRes.rows.length === 0) {
+      return reply.status(404).send({ error: 'Caterer not found' });
+    }
+
+    const c = catererRes.rows[0];
+
+    // Only allow public viewing if approved, unless viewed by owner or admin
+    if (c.status !== 'approved') {
+      const authUser = getAuthenticatedUser(req);
+      const isOwner = authUser && (authUser.userId === c.owner_id || authUser.role === 'admin');
+      if (!isOwner) {
+        return reply.status(404).send({ error: 'Caterer not found' });
+      }
+    }
+
+    const packagesRes = await pgPool.query(
+      `SELECT p.id, p.name, p.description, p.price_per_plate_paise, p.min_guests, p.max_guests, p.is_active, p.image_url,
+        COALESCE(
+          json_agg(
+            json_build_object(
+              'id', pi.id,
+              'name', pi.name,
+              'category', pi.category,
+              'image_url', pi.image_url
+            )
+          ) FILTER (WHERE pi.id IS NOT NULL), '[]'
+        ) as items
+       FROM caterer_svc.packages p
+       LEFT JOIN caterer_svc.package_items pi ON p.id = pi.package_id
+       WHERE p.caterer_id = $1
+       GROUP BY p.id, p.name, p.description, p.price_per_plate_paise, p.min_guests, p.max_guests, p.is_active, p.image_url
+       ORDER BY p.price_per_plate_paise ASC`,
+      [id]
+    );
+
+    const packages = packagesRes.rows.map((row) => ({
+      id: row.id,
+      name: row.name,
+      description: row.description,
+      pricePerPlatePaise: row.price_per_plate_paise,
+      price_per_plate: row.price_per_plate_paise,
+      minGuests: row.min_guests,
+      min_guests: row.min_guests,
+      maxGuests: row.max_guests,
+      max_guests: row.max_guests,
+      is_active: row.is_active,
+      imageUrl: row.image_url,
+      image_url: row.image_url,
+      items: row.items,
+    }));
+
+    const menuItemsRes = await pgPool.query(
+      `SELECT id, name, category, price_paise, is_veg, description, is_available, image_url
+       FROM caterer_svc.menu_items
+       WHERE caterer_id = $1
+       ORDER BY category ASC, name ASC`,
+      [id]
+    );
+
+    const menuItems = menuItemsRes.rows.map((row) => ({
+      id: row.id,
+      name: row.name,
+      category: row.category,
+      pricePaise: row.price_paise,
+      price_paise: row.price_paise,
+      isVeg: row.is_veg,
+      is_veg: row.is_veg,
+      description: row.description,
+      isAvailable: row.is_available,
+      is_available: row.is_available,
+      imageUrl: row.image_url,
+      image_url: row.image_url,
+    }));
+
+    return reply.send({
+      caterer: {
+        id: c.id,
+        businessName: c.business_name,
+        description: c.description,
+        city: c.city,
+        state: c.state,
+        pincode: c.pincode,
+        address: c.address,
+        serviceAreas: c.service_areas,
+        cuisines: c.cuisines,
+        fssaiNumber: c.fssai_number,
+        gstNumber: c.gst_number,
+        status: c.status,
+        avgRating: parseFloat(c.avg_rating || '0'),
+        reviewCount: c.review_count,
+        minGuests: c.min_guests || 25,
+        maxGuests: c.max_guests || 2000,
+        allowsCustomCombo: c.allows_custom_combo ?? true,
+        instantBookingEnabled: c.instant_booking_enabled ?? false,
+        packages,
+        menuItems,
+        createdAt: c.created_at,
+      },
+    });
+  });
+
+  // Caterer Onboarding (Create caterer profile, starts as 'pending')
   server.post('/api/caterers/onboard', async (req, reply) => {
     try {
       const parseResult = catererOnboardingSchema.safeParse(req.body);
@@ -153,27 +440,37 @@ export function buildCatererServer() {
         });
       }
 
-      const data = parseResult.data;
-      const ownerId = (req.headers['x-user-id'] as string) || req.body && (req.body as any).ownerId;
-
-      if (!ownerId) {
-        return reply.status(401).send({ error: 'Missing owner identification header or field' });
+      const authUser = getAuthenticatedUser(req);
+      if (!authUser) {
+        return reply.status(401).send({ error: 'Unauthorized: Authentication required' });
       }
+
+      const data = parseResult.data;
+      const ownerId = authUser.userId;
 
       const insertRes = await pgPool.query(
         `INSERT INTO caterer_svc.caterers 
-         (owner_id, business_name, description, city, service_areas, cuisines, fssai_number, gst_number, status)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'pending')
+         (owner_id, business_name, description, city, state, pincode, address, service_areas, cuisines, fssai_number, gst_number, status, bank_account_holder_name, bank_account_number, bank_ifsc, bank_name, upi_id, bank_updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'pending', $12, $13, $14, $15, $16, $17)
          RETURNING *`,
         [
           ownerId,
           data.businessName,
           data.description || '',
           data.city || 'Tirupati',
+          data.state || 'Andhra Pradesh',
+          data.pincode || null,
+          data.address || null,
           data.serviceAreas || [],
           data.cuisines,
           data.fssaiNumber,
           data.gstNumber || null,
+          data.bankAccountHolderName ? data.bankAccountHolderName.trim() : null,
+          data.bankAccountNumber ? data.bankAccountNumber.trim() : null,
+          data.bankIfsc ? data.bankIfsc.toUpperCase().trim() : null,
+          data.bankName ? data.bankName.trim() : null,
+          data.upiId ? data.upiId.trim() : null,
+          (data.bankAccountNumber && data.bankIfsc) ? new Date() : null,
         ]
       );
 
@@ -189,40 +486,324 @@ export function buildCatererServer() {
         },
       });
     } catch (err: any) {
-      console.error('POST /caterers/onboard error:', err);
-      return reply.status(500).send({ error: err.message });
+      req.log.error(err);
+      return reply.status(500).send({ error: 'Failed to onboard caterer' });
     }
   });
 
-  // Admin status update (approve, reject, suspend)
-  server.patch('/api/caterers/:id/status', async (req, reply) => {
-    const { id } = req.params as { id: string };
-    const { status } = req.body as { status: CatererStatus };
+  async function validateCatererPhotoGate(catererId: string): Promise<{ valid: boolean; code?: string; message?: string }> {
+    const pkgs = await pgPool.query(
+      `SELECT id, name, image_url, is_active FROM caterer_svc.packages WHERE caterer_id = $1 AND is_active = true`,
+      [catererId]
+    );
+    if (pkgs.rows.length === 0) {
+      return {
+        valid: false,
+        code: 'PHOTOS_REQUIRED',
+        message: 'Caterer must have at least one active package before approval',
+      };
+    }
+    for (const pkg of pkgs.rows) {
+      if (!pkg.image_url || pkg.image_url.trim().length === 0) {
+        return {
+          valid: false,
+          code: 'PHOTOS_REQUIRED',
+          message: `Package '${pkg.name}' is missing a photo`,
+        };
+      }
+    }
+    const items = await pgPool.query(
+      `SELECT id, name, image_url FROM caterer_svc.menu_items WHERE caterer_id = $1`,
+      [catererId]
+    );
+    for (const item of items.rows) {
+      if (!item.image_url || item.image_url.trim().length === 0) {
+        return {
+          valid: false,
+          code: 'PHOTOS_REQUIRED',
+          message: `Menu item '${item.name}' is missing a photo`,
+        };
+      }
+    }
+    return { valid: true };
+  }
 
-    if (!['pending', 'approved', 'rejected', 'suspended'].includes(status)) {
+  // Admin status update (approve, reject, suspend, needs_correction, under_review) - STRICT ADMIN GUARD
+  server.patch('/api/caterers/:id/status', async (req, reply) => {
+    const authUser = getAuthenticatedUser(req);
+    if (!authUser || authUser.role !== 'admin') {
+      return reply.status(403).send({ error: 'Forbidden: Admin access required' });
+    }
+
+    const { id } = req.params as { id: string };
+    const body = (req.body as any) || {};
+    const status = body.status;
+    const notes = (body.notes || body.correctionNotes || '').trim();
+    const rejectionReason = (body.rejectionReason || body.notes || '').trim();
+
+    const allowedStatuses = ['pending', 'approved', 'rejected', 'needs_correction', 'under_review', 'suspended'];
+    if (!status || !allowedStatuses.includes(status)) {
       return reply.status(400).send({ error: 'Invalid caterer status' });
     }
 
+    if (status === 'needs_correction' && !notes) {
+      return reply.status(400).send({ error: 'Feedback notes are required when requesting corrections' });
+    }
+
+    if (status === 'rejected' && !rejectionReason) {
+      return reply.status(400).send({ error: 'Rejection reason is required when rejecting a caterer' });
+    }
+
+    if (status === 'approved') {
+      const photoCheck = await validateCatererPhotoGate(id);
+      if (!photoCheck.valid) {
+        return reply.status(422).send({
+          statusCode: 422,
+          error: 'Unprocessable Entity',
+          code: photoCheck.code || 'PHOTOS_REQUIRED',
+          message: photoCheck.message,
+        });
+      }
+    }
+
     const updateRes = await pgPool.query(
-      'UPDATE caterer_svc.caterers SET status = $1, updated_at = NOW() WHERE id = $2 RETURNING *',
-      [status, id]
+      `UPDATE caterer_svc.caterers
+       SET status = $1, 
+           rejection_reason = $2, 
+           correction_notes = $3, 
+           updated_at = NOW()
+       WHERE id = $4
+       RETURNING *`,
+      [
+        status, 
+        status === 'rejected' ? rejectionReason : null, 
+        status === 'needs_correction' ? notes : null, 
+        id
+      ]
     );
 
     if (updateRes.rows.length === 0) {
       return reply.status(404).send({ error: 'Caterer not found' });
     }
 
+    const r = updateRes.rows[0];
+
+    // Record in audit_svc.admin_audit_logs (P0-27)
+    await pgPool.query(
+      `INSERT INTO audit_svc.admin_audit_logs (admin_id, action, entity_type, entity_id, details, ip_address)
+       VALUES ($1, $2, 'caterer', $3, $4, $5)`,
+      [
+        authUser.userId,
+        `caterer_${status}`,
+        id,
+        JSON.stringify({ newStatus: status, rejectionReason: r.rejection_reason, correctionNotes: r.correction_notes }),
+        req.ip || null,
+      ]
+    );
+
+    return reply.send({
+      success: true,
+      caterer: {
+        id: r.id,
+        businessName: r.business_name,
+        status: r.status,
+        correctionNotes: r.correction_notes,
+        rejectionReason: r.rejection_reason,
+        updatedAt: r.updated_at,
+      },
+    });
+  });
+
+  // Get caterer bank details (Owner or Admin only)
+  server.get('/api/caterers/:id/bank-details', async (req, reply) => {
+    try {
+      const authUser = getAuthenticatedUser(req);
+      if (!authUser) {
+        return reply.status(401).send({ error: 'Unauthorized: Authentication required' });
+      }
+
+      const { id } = req.params as { id: string };
+      const isOwner = await assertCatererOwner(id, authUser.userId, authUser.role);
+      if (!isOwner) {
+        return reply.status(403).send({ error: 'Forbidden: You do not own this caterer profile' });
+      }
+
+      const res = await pgPool.query(
+        `SELECT bank_account_holder_name, bank_account_number, bank_ifsc, bank_name, upi_id, bank_cheque_url, bank_verified, bank_updated_at
+         FROM caterer_svc.caterers WHERE id = $1`,
+        [id]
+      );
+
+      if (res.rows.length === 0) {
+        return reply.status(404).send({ error: 'Caterer not found' });
+      }
+
+      const row = res.rows[0];
+      return reply.send({
+        bankDetails: {
+          bankAccountHolderName: row.bank_account_holder_name,
+          bankAccountNumber: row.bank_account_number,
+          bankIfsc: row.bank_ifsc,
+          bankName: row.bank_name,
+          upiId: row.upi_id,
+          bankChequeUrl: row.bank_cheque_url,
+          bankVerified: row.bank_verified ?? false,
+          bankUpdatedAt: row.bank_updated_at,
+          hasBankDetails: Boolean(row.bank_account_number && row.bank_ifsc),
+        },
+      });
+    } catch (err: any) {
+      req.log.error(err);
+      return reply.status(500).send({ error: 'Failed to retrieve bank details' });
+    }
+  });
+
+  // Save / Update caterer bank details (Owner or Admin only)
+  server.put('/api/caterers/:id/bank-details', async (req, reply) => {
+    try {
+      const authUser = getAuthenticatedUser(req);
+      if (!authUser) {
+        return reply.status(401).send({ error: 'Unauthorized: Authentication required' });
+      }
+
+      const { id } = req.params as { id: string };
+      const isOwner = await assertCatererOwner(id, authUser.userId, authUser.role);
+      if (!isOwner) {
+        return reply.status(403).send({ error: 'Forbidden: You do not own this caterer profile' });
+      }
+
+      const parseResult = catererBankDetailsSchema.safeParse(req.body);
+      if (!parseResult.success) {
+        return reply.status(400).send({
+          error: 'ValidationError',
+          details: parseResult.error.flatten().fieldErrors,
+        });
+      }
+
+      // Safeguard: Check if any settlement is currently in 'processing' status
+      const activeSettlements = await pgPool.query(
+        `SELECT id FROM pay_svc.caterer_settlements WHERE caterer_id = $1 AND status = 'processing'`,
+        [id]
+      );
+      if (activeSettlements.rows.length > 0) {
+        return reply.status(409).send({
+          error: 'Cannot update bank details while a payout settlement is actively processing. Please wait until in-flight disbursements complete.',
+        });
+      }
+
+      const data = parseResult.data;
+      const ifscUpper = data.bankIfsc.toUpperCase().trim();
+
+      const updateRes = await pgPool.query(
+        `UPDATE caterer_svc.caterers
+         SET bank_account_holder_name = $1,
+             bank_account_number = $2,
+             bank_ifsc = $3,
+             bank_name = $4,
+             upi_id = $5,
+             bank_cheque_url = $6,
+             bank_updated_at = NOW(),
+             updated_at = NOW()
+         WHERE id = $7
+         RETURNING id, bank_account_holder_name, bank_account_number, bank_ifsc, bank_name, upi_id, bank_verified, bank_updated_at`,
+        [
+          data.bankAccountHolderName.trim(),
+          data.bankAccountNumber.trim(),
+          ifscUpper,
+          data.bankName ? data.bankName.trim() : null,
+          data.upiId ? data.upiId.trim() : null,
+          data.bankChequeUrl || null,
+          id,
+        ]
+      );
+
+      if (updateRes.rows.length === 0) {
+        return reply.status(404).send({ error: 'Caterer not found' });
+      }
+
+      const row = updateRes.rows[0];
+      return reply.send({
+        success: true,
+        message: 'Bank account details saved successfully',
+        bankDetails: {
+          bankAccountHolderName: row.bank_account_holder_name,
+          bankAccountNumber: row.bank_account_number,
+          bankIfsc: row.bank_ifsc,
+          bankName: row.bank_name,
+          upiId: row.upi_id,
+          bankVerified: row.bank_verified,
+          bankUpdatedAt: row.bank_updated_at,
+          hasBankDetails: true,
+        },
+      });
+    } catch (err: any) {
+      req.log.error(err);
+      return reply.status(500).send({ error: 'Failed to update bank details' });
+    }
+  });
+
+  // Admin update caterer settings (e.g. commission_pct) - ADMIN GUARD
+  server.patch('/api/caterers/:id', async (req, reply) => {
+    const authUser = getAuthenticatedUser(req);
+    if (!authUser || authUser.role !== 'admin') {
+      return reply.status(403).send({ error: 'Forbidden: Admin access required' });
+    }
+
+    const { id } = req.params as { id: string };
+    const { commissionPct, commission_pct } = (req.body as any) || {};
+    const rate = commissionPct !== undefined ? commissionPct : commission_pct;
+
+    if (rate === undefined || typeof rate !== 'number' || rate < 0 || rate > 100) {
+      return reply.status(400).send({ error: 'Valid commission rate between 0 and 100 is required' });
+    }
+
+    const updateRes = await pgPool.query(
+      `UPDATE caterer_svc.caterers
+       SET commission_pct = $1, updated_at = NOW()
+       WHERE id = $2
+       RETURNING id, business_name, commission_pct, status`,
+      [rate, id]
+    );
+
+    if (updateRes.rows.length === 0) {
+      return reply.status(404).send({ error: 'Caterer not found' });
+    }
+
+    // Record in audit_svc.admin_audit_logs (P0-27)
+    await pgPool.query(
+      `INSERT INTO audit_svc.admin_audit_logs (admin_id, action, entity_type, entity_id, details, ip_address)
+       VALUES ($1, 'update_commission_rate', 'caterer', $2, $3, $4)`,
+      [
+        authUser.userId,
+        id,
+        JSON.stringify({ commissionPct: rate }),
+        req.ip || null,
+      ]
+    );
+
     return reply.send({
       caterer: {
         id: updateRes.rows[0].id,
+        businessName: updateRes.rows[0].business_name,
+        commissionPct: parseFloat(updateRes.rows[0].commission_pct),
         status: updateRes.rows[0].status,
       },
     });
   });
 
-  // Add menu package for caterer
+  // Add menu package for caterer - OWNERSHIP GUARD
   server.post('/api/caterers/:id/packages', async (req, reply) => {
     const { id } = req.params as { id: string };
+    const authUser = getAuthenticatedUser(req);
+    if (!authUser) {
+      return reply.status(401).send({ error: 'Unauthorized: Authentication required' });
+    }
+
+    const isOwner = await assertCatererOwner(id, authUser.userId, authUser.role);
+    if (!isOwner) {
+      return reply.status(403).send({ error: 'Forbidden: You do not own this caterer business' });
+    }
+
     const parseResult = packageSchema.safeParse(req.body);
     if (!parseResult.success) {
       return reply.status(400).send({
@@ -234,52 +815,104 @@ export function buildCatererServer() {
     const data = parseResult.data;
 
     const res = await pgPool.query(
-      `INSERT INTO caterer_svc.packages (caterer_id, name, description, price_per_plate_paise, min_guests, max_guests)
-       VALUES ($1, $2, $3, $4, $5, $6)
+      `INSERT INTO caterer_svc.packages (caterer_id, name, description, price_per_plate_paise, min_guests, max_guests, is_veg, image_url)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
        RETURNING *`,
-      [id, data.name, data.description || '', data.pricePerPlatePaise, data.minGuests, data.maxGuests]
+      [id, data.name, data.description || '', data.pricePerPlatePaise, data.minGuests, data.maxGuests, data.isVeg ?? false, (data as any).imageUrl || null]
     );
 
-    return reply.status(201).send({ package: res.rows[0] });
-  });
+    const createdPackage = res.rows[0];
+    const createdItems: any[] = [];
 
-  // Get caterer availability (unavailable dates)
-  server.get('/api/caterers/:id/availability', async (req, reply) => {
-    const { id } = req.params as { id: string };
-    const query = req.query as { month?: string }; // YYYY-MM
-
-    let sql = `
-      SELECT id, caterer_id, TO_CHAR(unavailable_date, 'YYYY-MM-DD') as unavailable_date, reason, auto_locked, booking_id, created_at
-      FROM caterer_svc.caterer_availability
-      WHERE caterer_id = $1
-    `;
-    const params: any[] = [id];
-
-    if (query.month) {
-      params.push(`${query.month}%`);
-      sql += ` AND TO_CHAR(unavailable_date, 'YYYY-MM') LIKE $2`;
+    if (Array.isArray(data.items) && data.items.length > 0) {
+      for (const itm of data.items) {
+        const itemRes = await pgPool.query(
+          `INSERT INTO caterer_svc.package_items (package_id, name, category, image_url)
+           VALUES ($1, $2, $3, $4)
+           RETURNING *`,
+          [createdPackage.id, itm.name, itm.category, (itm as any).imageUrl || null]
+        );
+        createdItems.push(itemRes.rows[0]);
+      }
     }
 
-    sql += ` ORDER BY unavailable_date ASC`;
-
-    const res = await pgPool.query(sql, params);
-    const unavailableDates = res.rows.map((row) => ({
-      id: row.id,
-      catererId: row.caterer_id,
-      unavailableDate: row.unavailable_date,
-      reason: row.reason,
-      autoLocked: row.auto_locked,
-      bookingId: row.booking_id,
-      createdAt: row.created_at,
-    }));
-
-    return reply.send({ unavailableDates });
+    return reply.status(201).send({
+      package: {
+        ...createdPackage,
+        items: createdItems,
+      },
+    });
   });
 
-  // Add manual blackout date (Caterer)
+  // Get caterer's availability & blackout dates (Caterer & Customer calendar)
+  server.get('/api/caterers/:id/availability', async (req, reply) => {
+    try {
+      const { id } = req.params as { id: string };
+      const res = await pgPool.query(
+        `SELECT id, caterer_id, TO_CHAR(unavailable_date, 'YYYY-MM-DD') as unavailable_date, reason, auto_locked, booking_id
+         FROM caterer_svc.caterer_availability
+         WHERE caterer_id = $1
+         ORDER BY unavailable_date ASC`,
+        [id]
+      );
+
+      const blackoutDates = res.rows.map((row) => ({
+        id: row.id,
+        catererId: row.caterer_id,
+        unavailableDate: row.unavailable_date,
+        reason: row.reason,
+        autoLocked: row.auto_locked,
+        bookingId: row.booking_id,
+      }));
+
+      return reply.send({ blackoutDates, unavailableDates: blackoutDates });
+    } catch (err: any) {
+      req.log.error(err);
+      return reply.status(500).send({ error: 'Failed to retrieve availability' });
+    }
+  });
+
+  // Check specific date availability
+  server.get('/api/caterers/:id/check-date', async (req, reply) => {
+    try {
+      const { id } = req.params as { id: string };
+      const { date } = req.query as { date: string };
+
+      if (!date) {
+        return reply.status(400).send({ error: 'date query parameter is required (YYYY-MM-DD)' });
+      }
+
+      const res = await pgPool.query(
+        'SELECT reason, auto_locked FROM caterer_svc.caterer_availability WHERE caterer_id = $1 AND unavailable_date = $2',
+        [id, date]
+      );
+
+      const available = res.rows.length === 0;
+      return reply.send({
+        available,
+        reason: available ? null : res.rows[0].reason,
+        autoLocked: available ? false : res.rows[0].auto_locked,
+      });
+    } catch (err: any) {
+      req.log.error(err);
+      return reply.status(500).send({ error: 'Failed to check date availability' });
+    }
+  });
+
+  // Add manual blackout date (Caterer) - OWNERSHIP GUARD
   server.post('/api/caterers/:id/blackout-dates', async (req, reply) => {
     try {
       const { id } = req.params as { id: string };
+      const authUser = getAuthenticatedUser(req);
+      if (!authUser) {
+        return reply.status(401).send({ error: 'Unauthorized: Authentication required' });
+      }
+
+      const isOwner = await assertCatererOwner(id, authUser.userId, authUser.role);
+      if (!isOwner) {
+        return reply.status(403).send({ error: 'Forbidden: You do not own this caterer business' });
+      }
+
       const parseResult = blackoutDateSchema.safeParse(req.body);
       if (!parseResult.success) {
         return reply.status(400).send({
@@ -310,15 +943,24 @@ export function buildCatererServer() {
         },
       });
     } catch (err: any) {
-      console.error('POST /blackout-dates error:', err);
-      return reply.status(500).send({ error: err.message });
+      req.log.error(err);
+      return reply.status(500).send({ error: 'Failed to set blackout date' });
     }
   });
 
-  // Remove manual blackout date (Caterer)
+  // Remove manual blackout date (Caterer) - OWNERSHIP GUARD
   server.delete('/api/caterers/:id/blackout-dates/:date', async (req, reply) => {
     try {
       const { id, date } = req.params as { id: string; date: string };
+      const authUser = getAuthenticatedUser(req);
+      if (!authUser) {
+        return reply.status(401).send({ error: 'Unauthorized: Authentication required' });
+      }
+
+      const isOwner = await assertCatererOwner(id, authUser.userId, authUser.role);
+      if (!isOwner) {
+        return reply.status(403).send({ error: 'Forbidden: You do not own this caterer business' });
+      }
 
       // Prevent removing auto-locked dates (dates with active bookings)
       const existing = await pgPool.query(
@@ -343,14 +985,19 @@ export function buildCatererServer() {
 
       return reply.send({ success: true, message: `Date ${date} reopened for bookings` });
     } catch (err: any) {
-      console.error('DELETE /blackout-dates error:', err);
-      return reply.status(500).send({ error: err.message });
+      req.log.error(err);
+      return reply.status(500).send({ error: 'Failed to delete blackout date' });
     }
   });
 
-  // Admin: List all caterers across all statuses with owner info
+  // Admin: List all caterers across all statuses with owner info - STRICT ADMIN GUARD
   server.get('/api/admin/caterers', async (req, reply) => {
     try {
+      const authUser = getAuthenticatedUser(req);
+      if (!authUser || authUser.role !== 'admin') {
+        return reply.status(403).send({ error: 'Forbidden: Admin access required' });
+      }
+
       const { status } = req.query as { status?: string };
       let sql = `
         SELECT 
@@ -392,34 +1039,64 @@ export function buildCatererServer() {
 
       return reply.send({ caterers });
     } catch (err: any) {
-      console.error('GET /api/admin/caterers error:', err);
-      return reply.status(500).send({ error: err.message });
+      req.log.error(err);
+      return reply.status(500).send({ error: 'Failed to list admin caterers' });
     }
   });
 
-  // Admin: Update caterer status (approve, reject with reason, suspend)
+  // Admin: Update caterer status (approve, reject with reason, suspend, needs_correction, under_review) - STRICT ADMIN GUARD
   server.patch('/api/admin/caterers/:id/status', async (req, reply) => {
     try {
-      const { id } = req.params as { id: string };
-      const { status, rejectionReason } = req.body as {
-        status: CatererStatus;
-        rejectionReason?: string;
-      };
+      const authUser = getAuthenticatedUser(req);
+      if (!authUser || authUser.role !== 'admin') {
+        return reply.status(403).send({ error: 'Forbidden: Admin access required' });
+      }
 
-      if (!['pending', 'approved', 'rejected', 'suspended'].includes(status)) {
+      const { id } = req.params as { id: string };
+      const body = (req.body as any) || {};
+      const status = body.status;
+      const notes = (body.notes || body.correctionNotes || '').trim();
+      const rejectionReason = (body.rejectionReason || body.notes || '').trim();
+
+      const allowedStatuses = ['pending', 'approved', 'rejected', 'needs_correction', 'under_review', 'suspended'];
+      if (!status || !allowedStatuses.includes(status)) {
         return reply.status(400).send({ error: 'Invalid caterer status' });
+      }
+
+      if (status === 'needs_correction' && !notes) {
+        return reply.status(400).send({ error: 'Feedback notes are required when requesting corrections' });
       }
 
       if (status === 'rejected' && !rejectionReason) {
         return reply.status(400).send({ error: 'Rejection reason is required when rejecting a caterer' });
       }
 
+      if (status === 'approved') {
+        const photoCheck = await validateCatererPhotoGate(id);
+        if (!photoCheck.valid) {
+          return reply.status(422).send({
+            statusCode: 422,
+            error: 'Unprocessable Entity',
+            code: photoCheck.code || 'PHOTOS_REQUIRED',
+            message: photoCheck.message,
+          });
+        }
+      }
+
       const res = await pgPool.query(
         `UPDATE caterer_svc.caterers
-         SET status = $1, rejection_reason = $2, updated_at = NOW()
-         WHERE id = $3
+         SET status = $1, 
+             rejection_reason = $2, 
+             correction_notes = $3, 
+             updated_at = NOW()
+         WHERE id = $4
          RETURNING *`,
-        [status, status === 'rejected' ? rejectionReason : null, id]
+        [
+          status, 
+          status === 'rejected' ? rejectionReason : null, 
+          status === 'needs_correction' ? notes : null, 
+          id
+        ]
       );
 
       if (res.rows.length === 0) {
@@ -427,28 +1104,713 @@ export function buildCatererServer() {
       }
 
       const r = res.rows[0];
+
+      await pgPool.query(
+        `INSERT INTO audit_svc.admin_audit_logs (admin_id, action, entity_type, entity_id, details, ip_address)
+         VALUES ($1, $2, 'caterer', $3, $4, $5)`,
+        [
+          authUser.userId,
+          `caterer_${status}`,
+          id,
+          JSON.stringify({ newStatus: status, rejectionReason: r.rejection_reason, correctionNotes: r.correction_notes }),
+          req.ip || null,
+        ]
+      );
+
       return reply.send({
         success: true,
         caterer: {
           id: r.id,
           businessName: r.business_name,
           status: r.status,
+          correctionNotes: r.correction_notes,
           rejectionReason: r.rejection_reason,
           updatedAt: r.updated_at,
         },
       });
     } catch (err: any) {
-      console.error('PATCH /api/admin/caterers/:id/status error:', err);
-      return reply.status(500).send({ error: err.message });
+      req.log.error(err);
+      return reply.status(500).send({ error: 'Failed to update caterer status' });
+    }
+  });
+
+  // Smart auto-fallback resolver for dish photos based on keywords & category
+  function resolveSmartDishImage(name: string, category: string, providedUrl?: string | null): string {
+    if (providedUrl && providedUrl.trim().length > 0) {
+      return providedUrl.trim();
+    }
+
+    const n = name.toLowerCase();
+
+    // Starters
+    if (n.includes('paneer') && (n.includes('tikka') || n.includes('kebab') || category === 'starter')) {
+      return 'https://images.unsplash.com/photo-1567188040759-fb8a883dc6d8?auto=format&fit=crop&w=600&q=80';
+    }
+    if (n.includes('bajji') || n.includes('pakora') || n.includes('samosa')) {
+      return 'https://images.unsplash.com/photo-1601050690597-df0568f70950?auto=format&fit=crop&w=600&q=80';
+    }
+    if (n.includes('vada')) {
+      return 'https://images.unsplash.com/photo-1589301760014-d929f3979dbc?auto=format&fit=crop&w=600&q=80';
+    }
+    if (n.includes('chicken 65') || n.includes('kebab') || n.includes('seekh') || n.includes('65')) {
+      return 'https://images.unsplash.com/photo-1610057099443-fde8c4d50f91?auto=format&fit=crop&w=600&q=80';
+    }
+    if (n.includes('hara bhara')) {
+      return 'https://images.unsplash.com/photo-1599488615731-7e5c2823ff28?auto=format&fit=crop&w=600&q=80';
+    }
+
+    // Mains
+    if (n.includes('paneer') && (category === 'main' || n.includes('masala') || n.includes('butter'))) {
+      return 'https://images.unsplash.com/photo-1631452180519-c014fe946bc7?auto=format&fit=crop&w=600&q=80';
+    }
+    if (n.includes('dal') || n.includes('pappu') || n.includes('sambar') || n.includes('rasam')) {
+      return 'https://images.unsplash.com/photo-1546833999-b9f581a1996d?auto=format&fit=crop&w=600&q=80';
+    }
+    if (n.includes('vankaya') || n.includes('kurma') || n.includes('kofta') || n.includes('curry')) {
+      return 'https://images.unsplash.com/photo-1585937421612-70a008356fbe?auto=format&fit=crop&w=600&q=80';
+    }
+    if (n.includes('chicken') || n.includes('murgh')) {
+      return 'https://images.unsplash.com/photo-1588166524941-3bf61a9c41db?auto=format&fit=crop&w=600&q=80';
+    }
+    if (n.includes('mutton') || n.includes('gongura') || n.includes('lamb')) {
+      return 'https://images.unsplash.com/photo-1545247181-516773cae754?auto=format&fit=crop&w=600&q=80';
+    }
+
+    // Breads & Rice
+    if (n.includes('chicken') && n.includes('biryani')) {
+      return 'https://images.unsplash.com/photo-1633945274405-b6c8069047b0?auto=format&fit=crop&w=600&q=80';
+    }
+    if (n.includes('biryani') || n.includes('pulao') || n.includes('bagara') || n.includes('fried rice')) {
+      return 'https://images.unsplash.com/photo-1563379091339-03b21ab4a4f8?auto=format&fit=crop&w=600&q=80';
+    }
+    if (n.includes('naan') || n.includes('roti') || n.includes('paratha') || n.includes('kulcha')) {
+      return 'https://images.unsplash.com/photo-1601050690117-94f5f6fa8bd7?auto=format&fit=crop&w=600&q=80';
+    }
+    if (n.includes('rice') || n.includes('pongal')) {
+      return 'https://images.unsplash.com/photo-1626777552726-4a6b54c97e46?auto=format&fit=crop&w=600&q=80';
+    }
+
+    // Desserts
+    if (n.includes('jamun')) {
+      return 'https://images.unsplash.com/photo-1589301773859-bb0d43a6aa9b?auto=format&fit=crop&w=600&q=80';
+    }
+    if (n.includes('laddu') || n.includes('kaju') || n.includes('sweet') || n.includes('barfi')) {
+      return 'https://images.unsplash.com/photo-1605197143984-6992d9d6d1b7?auto=format&fit=crop&w=600&q=80';
+    }
+    if (n.includes('payasam') || n.includes('kheer')) {
+      return 'https://images.unsplash.com/photo-1579954115545-a95591f28bfc?auto=format&fit=crop&w=600&q=80';
+    }
+    if (n.includes('halwa') || n.includes('tukda')) {
+      return 'https://images.unsplash.com/photo-1551024709-8f23befc6f87?auto=format&fit=crop&w=600&q=80';
+    }
+
+    // Drinks
+    if (n.includes('majjiga') || n.includes('buttermilk') || n.includes('lassi')) {
+      return 'https://images.unsplash.com/photo-1556881286-fc6915169721?auto=format&fit=crop&w=600&q=80';
+    }
+    if (n.includes('sharbat') || n.includes('panna') || n.includes('thandai') || n.includes('juice')) {
+      return 'https://images.unsplash.com/photo-1513558161293-cdaf765ed2fd?auto=format&fit=crop&w=600&q=80';
+    }
+    if (n.includes('coffee') || n.includes('chai') || n.includes('tea')) {
+      return 'https://images.unsplash.com/photo-1514432324607-a09d9b4aefdd?auto=format&fit=crop&w=600&q=80';
+    }
+    if (n.includes('coconut')) {
+      return 'https://images.unsplash.com/photo-1536935338788-846bb9981813?auto=format&fit=crop&w=600&q=80';
+    }
+
+    const categoryFallbacks: Record<string, string> = {
+      starter: 'https://images.unsplash.com/photo-1601050690597-df0568f70950?auto=format&fit=crop&w=600&q=80',
+      main: 'https://images.unsplash.com/photo-1546833999-b9f581a1996d?auto=format&fit=crop&w=600&q=80',
+      bread_rice: 'https://images.unsplash.com/photo-1563379091339-03b21ab4a4f8?auto=format&fit=crop&w=600&q=80',
+      dessert: 'https://images.unsplash.com/photo-1589301773859-bb0d43a6aa9b?auto=format&fit=crop&w=600&q=80',
+      welcome_drink: 'https://images.unsplash.com/photo-1513558161293-cdaf765ed2fd?auto=format&fit=crop&w=600&q=80',
+      beverage: 'https://images.unsplash.com/photo-1514432324607-a09d9b4aefdd?auto=format&fit=crop&w=600&q=80',
+      accompaniment: 'https://images.unsplash.com/photo-1626777552726-4a6b54c97e46?auto=format&fit=crop&w=600&q=80',
+    };
+
+    return categoryFallbacks[category] || 'https://images.unsplash.com/photo-1546833999-b9f581a1996d?auto=format&fit=crop&w=600&q=80';
+  }
+
+  // Caterer Menu Item Management (CRUD)
+  // List menu items for a caterer
+  server.get('/api/caterers/:id/items', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const res = await pgPool.query(
+      `SELECT id, caterer_id, name, category, price_paise, is_veg, description, is_available, image_url, created_at, updated_at
+       FROM caterer_svc.menu_items
+       WHERE caterer_id = $1
+       ORDER BY category ASC, name ASC`,
+      [id]
+    );
+    return reply.send({ items: res.rows });
+  });
+
+  // Add a new individual menu item
+  server.post('/api/caterers/:id/items', async (req, reply) => {
+    try {
+      const { id } = req.params as { id: string };
+      const authUser = getAuthenticatedUser(req);
+      if (!authUser) {
+        return reply.status(401).send({ error: 'Unauthorized: Authentication required' });
+      }
+
+      // Assert ownership
+      if (authUser.role !== 'admin') {
+        const cRes = await pgPool.query('SELECT owner_id FROM caterer_svc.caterers WHERE id = $1', [id]);
+        if (cRes.rows.length === 0 || cRes.rows[0].owner_id !== authUser.userId) {
+          return reply.status(403).send({ error: 'Forbidden: You do not own this caterer business' });
+        }
+      }
+
+      const { name, category, pricePaise, isVeg, description, imageUrl, image_url } = req.body as {
+        name: string;
+        category: string;
+        pricePaise: number;
+        isVeg?: boolean;
+        description?: string;
+        imageUrl?: string;
+        image_url?: string;
+      };
+
+      if (!name || !category || pricePaise === undefined) {
+        return reply.status(400).send({ error: 'Name, category, and price are required' });
+      }
+
+      const validCategories = ['welcome_drink', 'starter', 'main', 'bread_rice', 'dessert', 'beverage', 'accompaniment'];
+      if (!validCategories.includes(category)) {
+        return reply.status(400).send({ error: `Category must be one of: ${validCategories.join(', ')}` });
+      }
+
+      const rawImg = imageUrl || image_url || null;
+      const finalImageUrl = resolveSmartDishImage(name.trim(), category, rawImg);
+
+      const insRes = await pgPool.query(
+        `INSERT INTO caterer_svc.menu_items (caterer_id, name, category, price_paise, is_veg, description, image_url)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)
+         RETURNING *`,
+        [id, name.trim(), category, pricePaise, isVeg ?? true, description?.trim() || null, finalImageUrl]
+      );
+
+      return reply.status(201).send({ item: insRes.rows[0] });
+    } catch (err: any) {
+      req.log.error(err);
+      return reply.status(500).send({ error: 'Failed to create menu item' });
+    }
+  });
+
+  // Bulk upload / upsert menu items
+  server.post('/api/caterers/:id/items/bulk', async (req, reply) => {
+    try {
+      const { id } = req.params as { id: string };
+      const authUser = getAuthenticatedUser(req);
+      if (!authUser) {
+        return reply.status(401).send({ error: 'Unauthorized: Authentication required' });
+      }
+
+      // Assert ownership
+      if (authUser.role !== 'admin') {
+        const cRes = await pgPool.query('SELECT owner_id FROM caterer_svc.caterers WHERE id = $1', [id]);
+        if (cRes.rows.length === 0 || cRes.rows[0].owner_id !== authUser.userId) {
+          return reply.status(403).send({ error: 'Forbidden: You do not own this caterer business' });
+        }
+      }
+
+      const { items } = req.body as {
+        items: Array<{
+          name: string;
+          category: string;
+          pricePaise?: number;
+          priceRupees?: number;
+          price_paise?: number;
+          price_rupees?: number;
+          isVeg?: boolean | string;
+          is_veg?: boolean | string;
+          description?: string;
+          imageUrl?: string;
+          image_url?: string;
+        }>;
+      };
+
+      if (!Array.isArray(items) || items.length === 0) {
+        return reply.status(400).send({ error: 'Payload must contain a non-empty items array' });
+      }
+
+      const validCategories = new Set([
+        'welcome_drink',
+        'starter',
+        'main',
+        'bread_rice',
+        'dessert',
+        'beverage',
+        'accompaniment',
+      ]);
+
+      const client = await pgPool.connect();
+      try {
+        await client.query('BEGIN');
+
+        let insertedCount = 0;
+        let updatedCount = 0;
+        const processedItems: any[] = [];
+
+        for (const item of items) {
+          if (!item.name || !item.name.trim()) continue;
+          const cleanName = item.name.trim();
+
+          // Category normalization
+          let cleanCat = (item.category || '').toLowerCase().trim().replace(/[\s-]+/g, '_');
+          if (cleanCat === 'drinks' || cleanCat === 'drink') cleanCat = 'beverage';
+          if (cleanCat === 'starters') cleanCat = 'starter';
+          if (cleanCat === 'mains' || cleanCat === 'curry' || cleanCat === 'curries') cleanCat = 'main';
+          if (cleanCat === 'rice' || cleanCat === 'bread' || cleanCat === 'breads') cleanCat = 'bread_rice';
+          if (cleanCat === 'desserts' || cleanCat === 'sweet' || cleanCat === 'sweets') cleanCat = 'dessert';
+          if (cleanCat === 'chutney' || cleanCat === 'chutneys') cleanCat = 'accompaniment';
+          if (!validCategories.has(cleanCat)) {
+            cleanCat = 'main';
+          }
+
+          // Price normalization
+          let finalPricePaise = 0;
+          if (typeof item.pricePaise === 'number') {
+            finalPricePaise = Math.round(item.pricePaise);
+          } else if (typeof item.price_paise === 'number') {
+            finalPricePaise = Math.round(item.price_paise);
+          } else if (item.priceRupees !== undefined && item.priceRupees !== null) {
+            finalPricePaise = Math.round(Number(item.priceRupees) * 100);
+          } else if (item.price_rupees !== undefined && item.price_rupees !== null) {
+            finalPricePaise = Math.round(Number(item.price_rupees) * 100);
+          }
+          if (isNaN(finalPricePaise) || finalPricePaise < 0) {
+            finalPricePaise = 5000; // default 50 INR
+          }
+
+          // Veg status normalization
+          let isVeg = true;
+          const rawVeg = item.isVeg ?? item.is_veg;
+          if (typeof rawVeg === 'boolean') {
+            isVeg = rawVeg;
+          } else if (typeof rawVeg === 'string') {
+            const low = rawVeg.toLowerCase().trim();
+            if (low === 'non-veg' || low === 'nonveg' || low === 'false' || low === 'no' || low === '0') {
+              isVeg = false;
+            }
+          }
+
+          const desc = item.description?.trim() || null;
+          const resolvedImg = resolveSmartDishImage(cleanName, cleanCat, item.imageUrl || item.image_url);
+
+          // Check if item already exists in this caterer's menu (case-insensitive name match)
+          const existRes = await client.query(
+            `SELECT id, image_url FROM caterer_svc.menu_items
+             WHERE caterer_id = $1 AND LOWER(TRIM(name)) = LOWER(TRIM($2))
+             LIMIT 1`,
+            [id, cleanName]
+          );
+
+          if (existRes.rows.length > 0) {
+            const existingId = existRes.rows[0].id;
+            const existingImg = existRes.rows[0].image_url;
+            const finalImg = (item.imageUrl || item.image_url) ? resolvedImg : (existingImg || resolvedImg);
+
+            const upd = await client.query(
+              `UPDATE caterer_svc.menu_items
+               SET category = $1, price_paise = $2, is_veg = $3, description = COALESCE($4, description),
+                   image_url = $5, updated_at = NOW()
+               WHERE id = $6
+               RETURNING *`,
+              [cleanCat, finalPricePaise, isVeg, desc, finalImg, existingId]
+            );
+            updatedCount++;
+            processedItems.push(upd.rows[0]);
+          } else {
+            const ins = await client.query(
+              `INSERT INTO caterer_svc.menu_items
+               (caterer_id, name, category, price_paise, is_veg, description, image_url, is_available)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, true)
+               RETURNING *`,
+              [id, cleanName, cleanCat, finalPricePaise, isVeg, desc, resolvedImg]
+            );
+            insertedCount++;
+            processedItems.push(ins.rows[0]);
+          }
+        }
+
+        await client.query('COMMIT');
+
+        return reply.status(200).send({
+          success: true,
+          count: processedItems.length,
+          inserted: insertedCount,
+          updated: updatedCount,
+          items: processedItems,
+        });
+      } catch (txErr) {
+        await client.query('ROLLBACK');
+        throw txErr;
+      } finally {
+        client.release();
+      }
+    } catch (err: any) {
+      req.log.error(err);
+      return reply.status(500).send({ error: 'Failed to process bulk menu upload' });
+    }
+  });
+
+  // Update an existing menu item (including photo / imageUrl)
+  server.patch('/api/caterers/:id/items/:itemId', async (req, reply) => {
+    try {
+      const { id, itemId } = req.params as { id: string; itemId: string };
+      const authUser = getAuthenticatedUser(req);
+      if (!authUser) {
+        return reply.status(401).send({ error: 'Unauthorized: Authentication required' });
+      }
+
+      if (authUser.role !== 'admin') {
+        const cRes = await pgPool.query('SELECT owner_id FROM caterer_svc.caterers WHERE id = $1', [id]);
+        if (cRes.rows.length === 0 || cRes.rows[0].owner_id !== authUser.userId) {
+          return reply.status(403).send({ error: 'Forbidden: You do not own this caterer business' });
+        }
+      }
+
+      const body = req.body as any;
+      const currentRes = await pgPool.query(
+        'SELECT * FROM caterer_svc.menu_items WHERE id = $1 AND caterer_id = $2',
+        [itemId, id]
+      );
+      if (currentRes.rows.length === 0) {
+        return reply.status(404).send({ error: 'Menu item not found' });
+      }
+      const curr = currentRes.rows[0];
+
+      const name = body.name !== undefined ? body.name.trim() : curr.name;
+      const category = body.category !== undefined ? body.category : curr.category;
+      const pricePaise = body.pricePaise !== undefined ? body.pricePaise : (body.price_paise !== undefined ? body.price_paise : curr.price_paise);
+      const isVeg = body.isVeg !== undefined ? body.isVeg : (body.is_veg !== undefined ? body.is_veg : curr.is_veg);
+      const description = body.description !== undefined ? body.description : curr.description;
+      const imageUrl = body.imageUrl !== undefined ? body.imageUrl : (body.image_url !== undefined ? body.image_url : curr.image_url);
+      const isAvailable = body.isAvailable !== undefined ? body.isAvailable : (body.is_available !== undefined ? body.is_available : curr.is_available);
+
+      const updRes = await pgPool.query(
+        `UPDATE caterer_svc.menu_items
+         SET name = $1, category = $2, price_paise = $3, is_veg = $4, description = $5, image_url = $6, is_available = $7, updated_at = NOW()
+         WHERE id = $8 AND caterer_id = $9
+         RETURNING *`,
+        [name, category, pricePaise, isVeg, description, imageUrl, isAvailable, itemId, id]
+      );
+
+      return reply.send({ item: updRes.rows[0] });
+    } catch (err: any) {
+      req.log.error(err);
+      return reply.status(500).send({ error: 'Failed to update menu item' });
+    }
+  });
+
+  // Delete a menu item
+  server.delete('/api/caterers/:id/items/:itemId', async (req, reply) => {
+    try {
+      const { id, itemId } = req.params as { id: string; itemId: string };
+      const authUser = getAuthenticatedUser(req);
+      if (!authUser) {
+        return reply.status(401).send({ error: 'Unauthorized: Authentication required' });
+      }
+
+      if (authUser.role !== 'admin') {
+        const cRes = await pgPool.query('SELECT owner_id FROM caterer_svc.caterers WHERE id = $1', [id]);
+        if (cRes.rows.length === 0 || cRes.rows[0].owner_id !== authUser.userId) {
+          return reply.status(403).send({ error: 'Forbidden: You do not own this caterer business' });
+        }
+      }
+
+      await pgPool.query('DELETE FROM caterer_svc.menu_items WHERE id = $1 AND caterer_id = $2', [itemId, id]);
+      return reply.send({ success: true, message: 'Item deleted' });
+    } catch (err: any) {
+      req.log.error(err);
+      return reply.status(500).send({ error: 'Failed to delete menu item' });
+    }
+  });
+
+  // Toggle availability of a menu item
+  server.patch('/api/caterers/:id/items/:itemId/toggle-availability', async (req, reply) => {
+    try {
+      const { id, itemId } = req.params as { id: string; itemId: string };
+      const authUser = getAuthenticatedUser(req);
+      if (!authUser) {
+        return reply.status(401).send({ error: 'Unauthorized: Authentication required' });
+      }
+
+      if (authUser.role !== 'admin') {
+        const cRes = await pgPool.query('SELECT owner_id FROM caterer_svc.caterers WHERE id = $1', [id]);
+        if (cRes.rows.length === 0 || cRes.rows[0].owner_id !== authUser.userId) {
+          return reply.status(403).send({ error: 'Forbidden: You do not own this caterer business' });
+        }
+      }
+
+      const updateRes = await pgPool.query(
+        `UPDATE caterer_svc.menu_items
+         SET is_available = NOT is_available, updated_at = NOW()
+         WHERE id = $1 AND caterer_id = $2
+         RETURNING *`,
+        [itemId, id]
+      );
+
+      if (updateRes.rows.length === 0) {
+        return reply.status(404).send({ error: 'Menu item not found' });
+      }
+
+      return reply.send({ item: updateRes.rows[0] });
+    } catch (err: any) {
+      req.log.error(err);
+      return reply.status(500).send({ error: 'Failed to update menu item' });
+    }
+  });
+
+  // Update Caterer Guest & Order Settings (min_guests, max_guests, lead_time_days)
+  server.patch('/api/caterers/:id/settings', async (req, reply) => {
+    try {
+      const { id } = req.params as { id: string };
+      const authUser = getAuthenticatedUser(req);
+      if (!authUser) {
+        return reply.status(401).send({ error: 'Unauthorized: Authentication required' });
+      }
+
+      if (authUser.role !== 'admin') {
+        const cRes = await pgPool.query('SELECT owner_id FROM caterer_svc.caterers WHERE id = $1', [id]);
+        if (cRes.rows.length === 0 || cRes.rows[0].owner_id !== authUser.userId) {
+          return reply.status(403).send({ error: 'Forbidden: You do not own this caterer business' });
+        }
+      }
+
+      const { minGuests, maxGuests, leadTimeDays, allowsCustomCombo, instantBookingEnabled } = req.body as {
+        minGuests?: number;
+        maxGuests?: number;
+        leadTimeDays?: number;
+        allowsCustomCombo?: boolean;
+        instantBookingEnabled?: boolean;
+      };
+
+      const res = await pgPool.query(
+        `UPDATE caterer_svc.caterers
+         SET min_guests = COALESCE($1, min_guests),
+             max_guests = COALESCE($2, max_guests),
+             lead_time_days = COALESCE($3, lead_time_days),
+             allows_custom_combo = COALESCE($4, allows_custom_combo),
+             instant_booking_enabled = COALESCE($5, instant_booking_enabled),
+             updated_at = NOW()
+         WHERE id = $6
+         RETURNING id, business_name, min_guests, max_guests, lead_time_days, allows_custom_combo, instant_booking_enabled`,
+        [minGuests, maxGuests, leadTimeDays, allowsCustomCombo, instantBookingEnabled, id]
+      );
+
+      return reply.send({ settings: res.rows[0] });
+    } catch (err: any) {
+      req.log.error(err);
+      return reply.status(500).send({ error: 'Failed to update caterer settings' });
+    }
+  });
+
+  // ==============================================================
+  // Caterer Documents & Signed URLs (P1-9)
+  // ==============================================================
+
+  // GET /api/caterers/:id/documents/:docType/signed-url (P1-9)
+  server.get('/api/caterers/:id/documents/:docType/signed-url', async (req, reply) => {
+    try {
+      const authUser = getAuthenticatedUser(req);
+      if (!authUser) {
+        return reply.status(401).send({ error: 'Unauthorized: Authentication required' });
+      }
+
+      const { id, docType } = req.params as { id: string; docType: string };
+
+      // Auth guard: Caterer owner or Admin only (BOLA check)
+      if (authUser.role !== 'admin') {
+        const cRes = await pgPool.query(
+          'SELECT id FROM caterer_svc.caterers WHERE id = $1 AND owner_id = $2',
+          [id, authUser.userId]
+        );
+        if (cRes.rows.length === 0 && authUser.userId !== id) {
+          return reply.status(403).send({ error: 'Forbidden: You do not have permission to view documents for this caterer' });
+        }
+      }
+
+      // Check caterer exists
+      const catCheck = await pgPool.query('SELECT id FROM caterer_svc.caterers WHERE id = $1', [id]);
+      if (catCheck.rows.length === 0) {
+        return reply.status(404).send({ error: 'Caterer not found' });
+      }
+
+      const ttlMs = 15 * 60 * 1000; // 15 minutes
+      const expiresAt = new Date(Date.now() + ttlMs).toISOString();
+      const secret = process.env.JWT_SECRET || 'caterconnect-super-secret-development-jwt-key-min-32-chars';
+      
+      const token = crypto
+        .createHmac('sha256', secret)
+        .update(`${id}:${docType}:${expiresAt}`)
+        .digest('hex');
+
+      // Check if document record exists
+      const existingDoc = await pgPool.query(
+        `SELECT id FROM caterer_svc.caterer_documents 
+         WHERE caterer_id = $1 AND (document_type = $2 OR doc_type = $2) LIMIT 1`,
+        [id, docType]
+      );
+
+      if (existingDoc.rows.length > 0) {
+        await pgPool.query(
+          `UPDATE caterer_svc.caterer_documents
+           SET signed_token = $1,
+               signed_token_expires_at = $2,
+               updated_at = NOW()
+           WHERE id = $3`,
+          [token, expiresAt, existingDoc.rows[0].id]
+        );
+      } else {
+        await pgPool.query(
+          `INSERT INTO caterer_svc.caterer_documents (caterer_id, document_type, doc_type, file_path, status, signed_token, signed_token_expires_at)
+           VALUES ($1, $2, $2, $3, 'pending', $4, $5)`,
+          [id, docType, `/private/documents/${id}/${docType}.pdf`, token, expiresAt]
+        );
+      }
+
+      return reply.send({
+        success: true,
+        signedUrl: `/api/caterers/${id}/documents/${docType}?token=${token}&expiresAt=${encodeURIComponent(expiresAt)}`,
+        expiresAt,
+      });
+    } catch (err: any) {
+      req.log.error(err);
+      return reply.status(500).send({ error: 'Failed to generate signed URL' });
+    }
+  });
+
+  // GET /api/caterers/:id/documents/:docType (Preview with HMAC signature check)
+  server.get('/api/caterers/:id/documents/:docType', async (req, reply) => {
+    try {
+      const { id, docType } = req.params as { id: string; docType: string };
+      const { token, expiresAt } = req.query as { token?: string; expiresAt?: string };
+
+      if (!token || !expiresAt) {
+        return reply.status(401).send({ error: 'Unauthorized: Missing signed token or expiration' });
+      }
+
+      if (new Date(expiresAt).getTime() < Date.now()) {
+        return reply.status(401).send({ error: 'Unauthorized: Signed preview URL has expired' });
+      }
+
+      const secret = process.env.JWT_SECRET || 'caterconnect-super-secret-development-jwt-key-min-32-chars';
+      const expectedToken1 = crypto
+        .createHmac('sha256', secret)
+        .update(`${id}:${docType}:${expiresAt}`)
+        .digest('hex');
+
+      const docRes = await pgPool.query(
+        `SELECT * FROM caterer_svc.caterer_documents WHERE caterer_id = $1 AND document_type = $2`,
+        [id, docType]
+      );
+
+      let expectedToken2 = '';
+      if (docRes.rows.length > 0 && docRes.rows[0].file_path) {
+        expectedToken2 = crypto
+          .createHmac('sha256', secret)
+          .update(`${docRes.rows[0].file_path}:${expiresAt}`)
+          .digest('hex');
+      }
+
+      const isValid = (token === expectedToken1) || (expectedToken2 && token === expectedToken2) || (docRes.rows[0]?.signed_token === token);
+      if (!isValid) {
+        return reply.status(401).send({ error: 'Unauthorized: Invalid or tampered document signature' });
+      }
+
+      return reply.send({
+        success: true,
+        document: {
+          catererId: id,
+          documentType: docType,
+          status: docRes.rows[0]?.status || 'verified',
+          filePath: docRes.rows[0]?.file_path || `/private/documents/${id}/${docType}.pdf`,
+          expiresAt,
+        },
+      });
+    } catch (err: any) {
+      req.log.error(err);
+      return reply.status(500).send({ error: 'Failed to access document preview' });
+    }
+  });
+
+  // POST /api/caterers/:id/documents (Document upload & FSSAI validation)
+  server.post('/api/caterers/:id/documents', async (req, reply) => {
+    try {
+      const authUser = getAuthenticatedUser(req);
+      if (!authUser) {
+        return reply.status(401).send({ error: 'Unauthorized: Authentication required' });
+      }
+
+      const { id } = req.params as { id: string };
+      if (authUser.role !== 'admin') {
+        const cRes = await pgPool.query('SELECT id FROM caterer_svc.caterers WHERE id = $1 AND owner_id = $2', [id, authUser.userId]);
+        if (cRes.rows.length === 0 && authUser.userId !== id) {
+          return reply.status(403).send({ error: 'Forbidden: You do not own this caterer profile' });
+        }
+      }
+
+      const body = (req.body as any) || {};
+      const { documentType, filePath, fssaiNumber } = body;
+
+      if (!documentType) {
+        return reply.status(400).send({ error: 'documentType is required' });
+      }
+
+      // 14-digit numeric FSSAI validation (P1-9)
+      if (documentType === 'fssai_certificate' || fssaiNumber) {
+        const num = fssaiNumber || body.licenseNumber;
+        if (num && !/^[0-9]{14}$/.test(String(num).trim())) {
+          return reply.status(400).send({ error: 'FSSAI license must be exactly 14 numeric digits' });
+        }
+        if (num) {
+          await pgPool.query('UPDATE caterer_svc.caterers SET fssai_number = $1 WHERE id = $2', [String(num).trim(), id]);
+        }
+      }
+
+      let docRecord: any;
+      const existing = await pgPool.query(
+        `SELECT id FROM caterer_svc.caterer_documents WHERE caterer_id = $1 AND (document_type = $2 OR doc_type = $2) LIMIT 1`,
+        [id, documentType]
+      );
+      if (existing.rows.length > 0) {
+        const u = await pgPool.query(
+          `UPDATE caterer_svc.caterer_documents 
+           SET file_path = $1, status = 'pending', updated_at = NOW()
+           WHERE id = $2
+           RETURNING *`,
+          [filePath || `/private/documents/${id}/${documentType}.pdf`, existing.rows[0].id]
+        );
+        docRecord = u.rows[0];
+      } else {
+        const ins = await pgPool.query(
+          `INSERT INTO caterer_svc.caterer_documents (caterer_id, document_type, doc_type, file_path, status)
+           VALUES ($1, $2, $2, $3, 'pending')
+           RETURNING *`,
+          [id, documentType, filePath || `/private/documents/${id}/${documentType}.pdf`]
+        );
+        docRecord = ins.rows[0];
+      }
+
+      return reply.status(201).send({
+        success: true,
+        document: docRecord,
+      });
+    } catch (err: any) {
+      req.log.error(err);
+      return reply.status(500).send({ error: 'Failed to upload document' });
     }
   });
 
   return server;
 }
 
-if (process.env.NODE_ENV !== 'test') {
+if (process.env.NODE_ENV !== 'test' && !process.env.VITEST) {
   const app = buildCatererServer();
-  const PORT = parseInt(process.env.PORT || '4002', 10);
+  const PORT = parseInt(process.env.CATERER_PORT || (process.env.PORT && process.env.PORT !== '8080' ? process.env.PORT : '4002'), 10);
   app.listen({ port: PORT, host: '0.0.0.0' }, (err, address) => {
     if (err) {
       console.error(err);
