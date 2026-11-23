@@ -18,7 +18,7 @@ echo "=== Starting CaterConnect Ecosystem ==="
 export UV_THREADPOOL_SIZE=${UV_THREADPOOL_SIZE:-16}
 
 # Cleanly free all ports if held
-fuser -k 4001/tcp 4002/tcp 4003/tcp 4004/tcp 4005/tcp 4006/tcp 8080/tcp 5173/tcp 5174/tcp 2>/dev/null || true
+fuser -k 4001/tcp 4002/tcp 4003/tcp 4004/tcp 4005/tcp 4006/tcp 8080/tcp 5173/tcp 5174/tcp 5175/tcp 2>/dev/null || true
 sleep 1
 
 # Fail fast if required environment variables are missing
@@ -68,7 +68,10 @@ echo "Starting Dedicated Frontend Applications..."
 echo "• Customer App (http://localhost:5173)"
 
 (cd "$DIR/frontend/partner" && pnpm exec vite --host 0.0.0.0 --port 5174 > "$DIR/logs/partner.log" 2>&1) &
-echo "• Partner & Admin App (http://localhost:5174)"
+echo "• Partner Caterer App (http://localhost:5174)"
+
+(cd "$DIR/frontend/admin" && pnpm exec vite --host 0.0.0.0 --port 5175 > "$DIR/logs/admin.log" 2>&1) &
+echo "• Admin Dashboard App (http://localhost:5175)"
 
 echo "=== All services launched successfully ==="
 echo "Press Ctrl+C to stop all services."

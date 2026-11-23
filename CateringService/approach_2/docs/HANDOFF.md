@@ -51,7 +51,7 @@ All three accounts are seeded with active sessions and password `Password123!`:
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | **Customer** (Host) | Customer App | [http://localhost:5173/login](http://localhost:5173/login) | `customer@example.com` | `Password123!` | Ramesh Kumar (Event Host) |
 | **Caterer** (Partner) | Partner App | [http://localhost:5174/login](http://localhost:5174/login) | `caterer@example.com` | `Password123!` | Srinivasa Rao (Sri Venkateswara Catering) |
-| **Admin** (Platform) | Partner App | [http://localhost:5174/login](http://localhost:5174/login) | `admin@caterconnect.in` | `Password123!` | Platform Operations & Verification |
+| **Admin** (Platform) | Admin Dashboard App | [http://localhost:5175/login](http://localhost:5175/login) | `admin@caterconnect.in` | `Password123!` | Dedicated Operations Center & Verification |
 
 ---
 
@@ -124,11 +124,18 @@ All three accounts are seeded with active sessions and password `Password123!`:
 │   │       ├── CatererDetailView.tsx     # Caterer menu packages & auth gate trigger
 │   │       ├── AuthRequiredModal.tsx     # Sign in required gate modal
 │   │       └── BookingRequestModal.tsx   # Real API booking request submission
-│   └── partner/                  # Port 5174 (@caterconnect/partner-app)
-│       └── src/features/caterer/components/
-│           ├── CatererOnboardingForm.tsx # 28 States + 8 UTs, PIN, dynamic localities
-│           ├── CatererDashboard.tsx      # Kitchen workflow & orders
-│           └── ...
+│   ├── partner/                  # Port 5174 (@caterconnect/partner-app)
+│   │   └── src/features/caterer/components/
+│   │       ├── CatererOnboardingForm.tsx # 28 States + 8 UTs, PIN, dynamic localities
+│   │       ├── CatererDashboard.tsx      # Kitchen workflow & orders
+│   │       └── ...
+│   └── admin/                    # Port 5175 (@caterconnect/admin-app)
+│       └── src/features/admin/components/
+│           ├── AdminCaterersList.tsx     # Caterer onboarding review & approval
+│           ├── AdminBookingsList.tsx     # Global booking & cancellation management
+│           ├── AdminSettlementsList.tsx  # Payouts & settlement holds
+│           ├── AdminDisputesList.tsx     # Dispute ticketing & refund resolution
+│           └── AdminOperationsMonitor.tsx # System health, nodes & container logs
 ├── shared/                       # Shared domain types, Zod schemas, state machine, Indian location constants
 ├── database/                     # SQL migration scripts (01_init to 16_p1_remediation_schema.sql)
 ├── docs/                         # ARCHITECTURE.md, API_REFERENCE.md, MILESTONES_DELIVERED.md, HANDOFF.md

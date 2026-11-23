@@ -128,6 +128,12 @@ export const LoginPage: React.FC = () => {
             Register your business
           </Link>
         </p>
+        <p className="mt-3 border-t border-slate-100 pt-3 text-center text-[11px] text-slate-500">
+          Platform Administrator?{' '}
+          <a href="http://localhost:5175" className="font-semibold text-purple-700 hover:underline">
+            Access Admin Operations (:5175)
+          </a>
+        </p>
       </div>
     </div>
   );

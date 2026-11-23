@@ -224,5 +224,18 @@ services:
       api-gateway:
         condition: service_healthy
 
+  admin-app:
+    build:
+      context: .
+      dockerfile: frontend/admin/Dockerfile
+    container_name: caterconnect-admin-app
+    restart: always
+    ports:
+      - "3002:80"
+      - "5175:80"
+    depends_on:
+      api-gateway:
+        condition: service_healthy
+
 volumes:
   pgdata:

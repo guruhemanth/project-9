@@ -51,7 +51,7 @@ All three accounts are seeded with active sessions and password `Password123!`:
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | **Customer** (Host) | Customer App | [http://localhost:5173/login](http://localhost:5173/login) | `customer@example.com` | `Password123!` | Ramesh Kumar (Event Host) |
 | **Caterer** (Partner) | Partner App | [http://localhost:5174/login](http://localhost:5174/login) | `caterer@example.com` | `Password123!` | Srinivasa Rao (Sri Venkateswara Catering) |
-| **Admin** (Platform) | Partner App | [http://localhost:5174/login](http://localhost:5174/login) | `admin@caterconnect.in` | `Password123!` | Platform Operations & Verification |
+| **Admin** (Platform) | Admin Dashboard App | [http://localhost:5175/login](http://localhost:5175/login) | `admin@caterconnect.in` | `Password123!` | Dedicated Operations Center & Verification |
 
 ---
 

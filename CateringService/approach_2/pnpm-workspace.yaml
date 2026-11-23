@@ -2,6 +2,7 @@ packages:
   - 'shared'
   - 'frontend/customer'
   - 'frontend/partner'
+  - 'frontend/admin'
   - 'backend/gateway'
   - 'backend/services/*'
   - 'tests/e2e'
