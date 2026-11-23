@@ -150,6 +150,7 @@ describe('Phase 5 Push Notifications & Outbox Worker (Test-First)', () => {
       },
     ];
 
+    await pgPool.query('DELETE FROM notify_svc.notification_outbox');
     for (const ev of events) {
       await pgPool.query(
         'INSERT INTO notify_svc.notification_outbox (event_type, payload) VALUES ($1, $2)',

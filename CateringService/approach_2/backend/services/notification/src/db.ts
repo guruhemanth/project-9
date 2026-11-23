@@ -30,7 +30,7 @@ const env = validateEnv(createDbEnvSchema(), process.env);
 
 export const pgPool = new Pool({
   connectionString: env.DATABASE_URL,
-  max: 20,
+  max: parseInt(process.env.DB_POOL_MAX || '10', 10),
   idleTimeoutMillis: 30000,
   connectionTimeoutMillis: 5000,
 });

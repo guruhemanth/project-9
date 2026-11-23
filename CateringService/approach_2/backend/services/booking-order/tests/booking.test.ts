@@ -107,7 +107,7 @@ describe('Booking & Order Service Integration', () => {
 
   it('rejects booking request on an unavailable or blackout date', async () => {
     const catererId = 'd0000000-0000-0000-0000-000000000001';
-    const blockedDate = '2026-11-20';
+    const blockedDate = '2026-12-20';
 
     // Seed blocked date in caterer_availability
     await pgPool.query(
@@ -135,7 +135,7 @@ describe('Booking & Order Service Integration', () => {
     });
 
     expect(res.statusCode).toBe(409);
-    expect(res.json().error).toContain('Caterer is not available on 2026-11-20');
+    expect(res.json().error).toContain('Caterer is not available on 2026-12-20');
   });
 
   it('allows admin to query all platform bookings and cancel with dispute resolution', async () => {

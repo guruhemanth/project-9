@@ -70,10 +70,16 @@ export function useRealtimeUpdates(
     onEventRef.current = onEvent;
   }, [onEvent]);
 
+  const visibilityListenerRef = useRef<(() => void) | null>(null);
+
   const stopPolling = useCallback(() => {
     if (pollTimer.current !== null) {
       clearInterval(pollTimer.current);
       pollTimer.current = null;
+    }
+    if (visibilityListenerRef.current && typeof document !== 'undefined') {
+      document.removeEventListener('visibilitychange', visibilityListenerRef.current);
+      visibilityListenerRef.current = null;
     }
   }, []);
 
@@ -84,6 +90,10 @@ export function useRealtimeUpdates(
     const token = getToken();
 
     const poll = async () => {
+      // Latency & CPU optimization: pause background network polling when tab is inactive
+      if (typeof document !== 'undefined' && document.hidden) {
+        return;
+      }
       try {
         const res = await fetch(pollFallbackUrl, {
           headers: token ? { Authorization: `Bearer ${token}` } : {},
@@ -127,6 +137,16 @@ export function useRealtimeUpdates(
 
     poll();
     pollTimer.current = setInterval(poll, POLL_INTERVAL_MS);
+
+    if (typeof document !== 'undefined') {
+      const handleVisibility = () => {
+        if (!document.hidden) {
+          poll();
+        }
+      };
+      visibilityListenerRef.current = handleVisibility;
+      document.addEventListener('visibilitychange', handleVisibility);
+    }
   }, [pollFallbackUrl]);
 
   const connect = useCallback(() => {

@@ -156,6 +156,19 @@ const MIGRATIONS: MigrationDefinition[] = [
         CHECK (status = ANY (ARRAY['pending'::text, 'approved'::text, 'rejected'::text, 'suspended'::text]));
     `,
   },
+  {
+    name: '17_performance_indexes',
+    upFile: '17_performance_indexes.sql',
+    downSql: `
+      DROP INDEX IF EXISTS order_svc.idx_bookings_caterer_status_date;
+      DROP INDEX IF EXISTS order_svc.idx_bookings_customer_created;
+      DROP INDEX IF EXISTS order_svc.idx_bookings_status_date;
+      DROP INDEX IF EXISTS caterer_svc.idx_packages_caterer_id;
+      DROP INDEX IF EXISTS caterer_svc.idx_package_items_package_id;
+      DROP INDEX IF EXISTS caterer_svc.idx_caterers_service_areas;
+      DROP INDEX IF EXISTS pay_svc.idx_payments_booking_id;
+    `,
+  },
 ];
 
 function getConnectionString(): string {

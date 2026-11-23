@@ -14,6 +14,9 @@ fi
 
 echo "=== Starting CaterConnect Ecosystem ==="
 
+# Ensure libuv threadpool has 16 worker threads to prevent bcrypt/crypto starvation
+export UV_THREADPOOL_SIZE=${UV_THREADPOOL_SIZE:-16}
+
 # Cleanly free all ports if held
 fuser -k 4001/tcp 4002/tcp 4003/tcp 4004/tcp 4005/tcp 4006/tcp 8080/tcp 5173/tcp 5174/tcp 2>/dev/null || true
 sleep 1

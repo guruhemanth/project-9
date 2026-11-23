@@ -40,12 +40,13 @@ describe('Tier 4: Scenario 5 — Event Dispute Filing & Admin Refund Resolution'
   });
 
   it('Step 1: Event passes and booking is marked completed with pending settlement', async () => {
+    const recentEventDate = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
     const booking = await dbHelper.query(
       `INSERT INTO order_svc.bookings 
        (customer_id, caterer_id, package_id, event_date, event_time, guest_count, venue_address, city, state, total_amount_paise, status, amount_paid_paise, balance_due_paise)
-       VALUES ($1, $2, 'e0000000-0000-0000-0000-000000000001', '2026-11-15', '19:00:00', 150, 'Main Hall', 'Tirupati', 'Andhra Pradesh', $3, 'completed', $3, 0)
+       VALUES ($1, $2, 'e0000000-0000-0000-0000-000000000001', $3, '19:00:00', 150, 'Main Hall', 'Tirupati', 'Andhra Pradesh', $4, 'completed', $4, 0)
        RETURNING id`,
-      [TEST_USERS.customer.id, catererId, totalAmountPaise],
+      [TEST_USERS.customer.id, catererId, recentEventDate, totalAmountPaise],
     );
     bookingId = booking[0].id;
 

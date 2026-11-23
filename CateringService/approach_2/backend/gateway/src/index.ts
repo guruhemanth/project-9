@@ -131,6 +131,26 @@ export function buildGatewayServer() {
     timestamp: new Date().toISOString(),
   }));
 
+  // Internal token cache (30s TTL) to eliminate repeated synchronous HMAC re-signing per proxy hop
+  const internalTokenCache = new Map<string, { token: string; expiresAt: number }>();
+
+  function getCachedInternalToken(payload: { userId: string; role: any; email?: string }, secret: string): string {
+    const now = Date.now();
+    const cacheKey = `${payload.userId}:${payload.role}:${payload.email || ''}`;
+    const cached = internalTokenCache.get(cacheKey);
+    if (cached && cached.expiresAt > now) {
+      return cached.token;
+    }
+    const token = signInternalToken(payload, secret);
+    internalTokenCache.set(cacheKey, { token, expiresAt: now + 30000 });
+    if (internalTokenCache.size > 2000) {
+      for (const [k, v] of internalTokenCache.entries()) {
+        if (v.expiresAt <= now) internalTokenCache.delete(k);
+      }
+    }
+    return token;
+  }
+
   // Generic JWT authentication hook that signs internal token for downstream services
   const requireAuth = async (req: any, reply: any) => {
     if (isPublicRoute(req.method, req.url)) {
@@ -140,7 +160,7 @@ export function buildGatewayServer() {
           const user = req.user as { sub: string; role: any; email?: string };
           req.headers['x-user-id'] = user.sub;
           req.headers['x-user-role'] = user.role;
-          req.headers['x-internal-token'] = signInternalToken(
+          req.headers['x-internal-token'] = getCachedInternalToken(
             { userId: user.sub, role: user.role, email: user.email },
             env.JWT_SECRET
           );
@@ -156,7 +176,7 @@ export function buildGatewayServer() {
       const user = req.user as { sub: string; role: any; email?: string };
       req.headers['x-user-id'] = user.sub;
       req.headers['x-user-role'] = user.role;
-      req.headers['x-internal-token'] = signInternalToken(
+      req.headers['x-internal-token'] = getCachedInternalToken(
         { userId: user.sub, role: user.role, email: user.email },
         env.JWT_SECRET
       );
@@ -199,7 +219,7 @@ export function buildGatewayServer() {
       }
       req.headers['x-user-id'] = user.sub;
       req.headers['x-user-role'] = user.role;
-      req.headers['x-internal-token'] = signInternalToken(
+      req.headers['x-internal-token'] = getCachedInternalToken(
         { userId: user.sub, role: 'admin', email: user.email },
         env.JWT_SECRET
       );
@@ -235,11 +255,20 @@ export function buildGatewayServer() {
   const NOTIFY_URL = env.NOTIFICATION_SERVICE_URL;
   const CHAT_URL = env.CHAT_SERVICE_URL;
 
+  // Undici keep-alive connection pool options to eliminate TCP socket handshake latency per proxy hop
+  const proxyUndiciOptions = {
+    connections: 50,
+    pipelining: 1,
+    keepAliveTimeout: 60000,
+    keepAliveMaxTimeout: 600000,
+  };
+
   // 1. Auth Service Routes
   server.register(fastifyHttpProxy, {
     upstream: AUTH_URL,
     prefix: '/api/auth',
     rewritePrefix: '/api/auth',
+    undici: proxyUndiciOptions,
   });
 
   // 2. Caterer & Menu Service Routes
@@ -247,6 +276,7 @@ export function buildGatewayServer() {
     upstream: CATERER_URL,
     prefix: '/api/caterers',
     rewritePrefix: '/api/caterers',
+    undici: proxyUndiciOptions,
     preHandler: async (req, reply) => {
       // Allow GET public routes (with optional auth forwarding); require authentication for mutations and protected reads
       return requireAuth(req, reply);
@@ -258,6 +288,7 @@ export function buildGatewayServer() {
     upstream: PAYMENT_URL,
     prefix: '/api/bookings/:id/invoice',
     rewritePrefix: '/api/bookings/:id/invoice',
+    undici: proxyUndiciOptions,
     preHandler: requireAuth,
   });
 
@@ -266,6 +297,7 @@ export function buildGatewayServer() {
     upstream: BOOKING_URL,
     prefix: '/api/bookings',
     rewritePrefix: '/api/bookings',
+    undici: proxyUndiciOptions,
     preHandler: requireAuth,
   });
 
@@ -274,6 +306,7 @@ export function buildGatewayServer() {
     upstream: PAYMENT_URL,
     prefix: '/api/payments',
     rewritePrefix: '/api/payments',
+    undici: proxyUndiciOptions,
     preHandler: async (req, reply) => {
       const path = req.url.split('?')[0];
       // Only the EXACT webhook path is public
@@ -353,6 +386,7 @@ export function buildGatewayServer() {
     upstream: CHAT_URL,
     prefix: '/api/chat',
     rewritePrefix: '/api/chat',
+    undici: proxyUndiciOptions,
     preHandler: requireAuth,
   });
 
@@ -361,6 +395,7 @@ export function buildGatewayServer() {
     upstream: CATERER_URL,
     prefix: '/api/admin/caterers',
     rewritePrefix: '/api/admin/caterers',
+    undici: proxyUndiciOptions,
     preHandler: adminAuthPreHandler,
   });
 
@@ -368,6 +403,7 @@ export function buildGatewayServer() {
     upstream: BOOKING_URL,
     prefix: '/api/admin/bookings',
     rewritePrefix: '/api/admin/bookings',
+    undici: proxyUndiciOptions,
     preHandler: adminAuthPreHandler,
   });
 
@@ -375,6 +411,7 @@ export function buildGatewayServer() {
     upstream: PAYMENT_URL,
     prefix: '/api/admin/settlements',
     rewritePrefix: '/api/admin/settlements',
+    undici: proxyUndiciOptions,
     preHandler: adminAuthPreHandler,
   });
 
@@ -382,6 +419,7 @@ export function buildGatewayServer() {
     upstream: PAYMENT_URL,
     prefix: '/api/admin/analytics',
     rewritePrefix: '/api/admin/analytics',
+    undici: proxyUndiciOptions,
     preHandler: adminAuthPreHandler,
   });
 
@@ -389,6 +427,7 @@ export function buildGatewayServer() {
     upstream: PAYMENT_URL,
     prefix: '/api/admin/reconciliation',
     rewritePrefix: '/api/admin/reconciliation',
+    undici: proxyUndiciOptions,
     preHandler: adminAuthPreHandler,
   });
 
@@ -396,6 +435,7 @@ export function buildGatewayServer() {
     upstream: BOOKING_URL,
     prefix: '/api/admin/disputes',
     rewritePrefix: '/api/admin/disputes',
+    undici: proxyUndiciOptions,
     preHandler: adminAuthPreHandler,
   });
 
