@@ -1,0 +1,203 @@
+name: CaterConnect CI/CD & Security Pipeline
+
+on:
+  push:
+    branches: [QA]
+  pull_request:
+    branches: [QA]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # -------------------------------------------------------------
+  # Job 1: Lint, Build Typecheck & Automated Test Suite
+  # -------------------------------------------------------------
+  test-and-verify:
+    name: Lint, Typecheck & Tests
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgrespassword
+          POSTGRES_DB: caterconnect
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 12.16.1
+          run_install: false
+
+      - name: Install Dependencies
+        working-directory: CateringService/approach_2
+        run: pnpm install --frozen-lockfile
+
+      - name: Strict Typecheck & Build
+        working-directory: CateringService/approach_2
+        run: pnpm -r run build
+
+      - name: Run Database Migrations
+        working-directory: CateringService/approach_2
+        env:
+          DATABASE_URL: postgresql://postgres:postgrespassword@localhost:5432/caterconnect
+        run: pnpm tsx database/migrator.ts
+
+      - name: Run E2E & Unit Test Suites
+        working-directory: CateringService/approach_2
+        env:
+          DATABASE_URL: postgresql://postgres:postgrespassword@localhost:5432/caterconnect
+          JWT_SECRET: super-secret-testing-jwt-token-with-at-least-32-chars
+          NODE_ENV: test
+        run: pnpm -r --workspace-concurrency=1 test
+
+  # -------------------------------------------------------------
+  # Job 2: Static Analysis Security Testing (SAST) & Scans
+  # -------------------------------------------------------------
+  security-audit-and-sast:
+    name: Security Scans (SAST, CVE & Secrets)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 12.16.1
+          run_install: false
+
+      - name: Dependency Security Audit
+        working-directory: CateringService/approach_2
+        run: pnpm audit --audit-level=high
+
+      - name: Semgrep SAST Scan (OWASP Top 10 & Security Rules)
+        uses: returntocorp/semgrep-action@v1
+        with:
+          config: >-
+            p/security-audit
+            p/owasp-top-ten
+            p/javascript
+            p/typescript
+        continue-on-error: true
+
+      - name: Trivy Repository Vulnerability & Secret Scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          scan-ref: 'CateringService/approach_2'
+          format: 'table'
+          severity: 'CRITICAL,HIGH'
+          exit-code: '0'
+
+  # -------------------------------------------------------------
+  # Job 3: Build & Push 10 Containers to Docker Hub
+  # -------------------------------------------------------------
+  build-and-push:
+    name: Build & Push Images to Docker Hub
+    needs: [test-and-verify, security-audit-and-sast]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/QA'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: caterconnect-auth-service
+            dockerfile: backend/services/auth/Dockerfile
+          - name: caterconnect-caterer-menu-service
+            dockerfile: backend/services/caterer-menu/Dockerfile
+          - name: caterconnect-booking-order-service
+            dockerfile: backend/services/booking-order/Dockerfile
+          - name: caterconnect-payment-service
+            dockerfile: backend/services/payment/Dockerfile
+          - name: caterconnect-notification-service
+            dockerfile: backend/services/notification/Dockerfile
+          - name: caterconnect-chat-service
+            dockerfile: backend/services/chat/Dockerfile
+          - name: caterconnect-api-gateway
+            dockerfile: backend/gateway/Dockerfile
+          - name: caterconnect-customer-app
+            dockerfile: frontend/customer/Dockerfile
+          - name: caterconnect-partner-app
+            dockerfile: frontend/partner/Dockerfile
+          - name: caterconnect-admin-app
+            dockerfile: frontend/admin/Dockerfile
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and Push ${{ matrix.name }}
+        uses: docker/build-push-action@v6
+        with:
+          context: CateringService/approach_2
+          file: CateringService/approach_2/${{ matrix.dockerfile }}
+          platforms: linux/amd64
+          push: true
+          tags: ${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.name }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # -------------------------------------------------------------
+  # Job 4: Continuous Deployment to oracle2 via SSH
+  # -------------------------------------------------------------
+  deploy-to-oracle2:
+    name: Deploy to oracle2
+    needs: [build-and-push]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/QA'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy on remote VM via SSH
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          script: |
+            set -e
+            echo "=== Pulling latest changes from QA branch ==="
+            cd /home/ubuntu/projects/project-9/CateringService/approach_2
+            git fetch origin QA
+            git reset --hard origin/QA
+            
+            echo "=== Pulling latest prebuilt images from Docker Hub ==="
+            docker compose pull
+            
+            echo "=== Launching updated containers ==="
+            docker compose up -d --remove-orphans
+            
+            echo "=== Container Status ==="
+            docker compose ps
