@@ -63,6 +63,9 @@ jobs:
           DATABASE_URL: postgresql://postgres:postgrespassword@localhost:5432/caterconnect
           JWT_SECRET: super-secret-testing-jwt-token-with-at-least-32-chars
           NODE_ENV: test
+          RAZORPAY_KEY_ID: rzp_test_TsGPMrG0b8mQdH
+          RAZORPAY_KEY_SECRET: 2F6s5xy8AlIINFngqlztxY7P
+          RAZORPAY_WEBHOOK_SECRET: caterconnect_test_webhook_secret_key
         run: pnpm -r --workspace-concurrency=1 test
 
       - name: Dependency Security Audit
