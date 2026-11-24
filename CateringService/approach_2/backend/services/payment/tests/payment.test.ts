@@ -15,6 +15,12 @@ describe('Payment Service Integration (Dual Options & Webhook)', () => {
 
   beforeAll(async () => {
     await app.ready();
+    // Ensure test caterer has bank account details configured for disbursement tests
+    await pgPool.query(
+      `UPDATE caterer_svc.caterers
+       SET bank_account_number = '98765432101234', bank_ifsc = 'HDFC0001234'
+       WHERE id = 'd0000000-0000-0000-0000-000000000001'`
+    );
     // Insert a test booking in 'accepted' state with 100,000 paise (₹1,000)
     await pgPool.query(
       `INSERT INTO order_svc.bookings
