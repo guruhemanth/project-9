@@ -11,4 +11,6 @@
 | **Phase 5** | **Booking & Order Service (`services/booking-order-service`)** | Fastify booking state machine (`accept_booking`, `reject_booking`, `cancel_booking`) | Pending |
 | **Phase 6** | **Payment Service (`services/payment-service`)** | Fastify Razorpay integration with Dual Payment Options (Full vs 25% Advance) & HMAC webhook | Pending |
 | **Phase 7** | **API Gateway (`services/api-gateway`)** | Fastify gateway reverse proxy on port 8080 with JWT route guards | Pending |
-| **Phase 8** | **Frontend Client & Docker Compose Deployment** | React 19 web app wired to API Gateway, multi-stage Dockerfiles, `docker-compose.yml` | Pending |
+| **Phase 8** | **Frontend Client & Docker Compose Deployment** | React 19 web app wired to API Gateway, multi-stage Dockerfiles, `docker-compose.yml` | Completed |
+| **Phase 9** | **Production SSL / Custom Domain & DNS Ingress** | Let's Encrypt / Certbot SSL termination, custom domains, direct-IP bypass cleanup | Planned |
+| **Phase 10** | **Real-Time Web Push & Notification Dispatcher** | VAPID keypair config, UI prompts mounting in Customer & Partner apps, outbox worker hardening | In Progress |
