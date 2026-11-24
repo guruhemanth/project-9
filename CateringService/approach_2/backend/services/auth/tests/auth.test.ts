@@ -7,6 +7,12 @@ describe('Auth Service Fastify Integration', () => {
 
   beforeAll(async () => {
     await app.ready();
+    // Ensure test user exists with hashed password 'Password123!'
+    await pgPool.query(
+      `INSERT INTO auth_svc.users (id, email, password_hash, role, full_name, phone)
+       VALUES ('c0000000-0000-0000-0000-000000000001', 'customer@example.com', '$2b$10$fahpwQ2OvqBT0Wo.mHvI9.ZwzWCClnkkXRXNZI0ibk9UhGP2096N2', 'customer', 'Ramesh Kumar', '+919876543210')
+       ON CONFLICT (id) DO UPDATE SET password_hash = '$2b$10$fahpwQ2OvqBT0Wo.mHvI9.ZwzWCClnkkXRXNZI0ibk9UhGP2096N2'`
+    );
   });
 
   afterAll(async () => {
