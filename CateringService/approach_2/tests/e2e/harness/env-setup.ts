@@ -17,6 +17,7 @@ dotenv.config({ path: envPath, override: true });
 process.env.NODE_ENV = 'test';
 process.env.VITEST = 'true';
 process.env.PORT = '8080';
+process.env.ENFORCE_HTTPS = 'true';
 
 if (!process.env.JWT_SECRET || process.env.JWT_SECRET.length < 32) {
   process.env.JWT_SECRET = 'caterconnect-super-secret-development-jwt-key-min-32-chars';
