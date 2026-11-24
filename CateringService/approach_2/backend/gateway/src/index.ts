@@ -105,10 +105,18 @@ export function buildGatewayServer() {
 
   // Application-layer HTTPS redirect enforcement (P1-19) & Strip client-sent x-user-* and internal security headers on EVERY incoming request
   server.addHook('onRequest', async (req, reply) => {
+    const shouldEnforceHttps =
+      process.env.ENFORCE_HTTPS === 'true' ||
+      (env.NODE_ENV === 'production' &&
+        process.env.ENFORCE_HTTPS !== 'false' &&
+        !req.headers.host?.includes('129.225.70.124') &&
+        !req.headers.host?.includes('localhost') &&
+        !req.headers.host?.includes('127.0.0.1'));
+
     const forwardedProto = req.headers['x-forwarded-proto'];
     const rawProto = Array.isArray(forwardedProto) ? forwardedProto[0] : forwardedProto;
     const isHttp = typeof rawProto === 'string' && rawProto.split(',')[0].trim().toLowerCase() === 'http';
-    if (isHttp) {
+    if (shouldEnforceHttps && isHttp) {
       const host = req.headers.host || req.hostname;
       return reply.redirect(`https://${host}${req.raw.url}`, 301);
     }
