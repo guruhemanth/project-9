@@ -60,7 +60,9 @@ jobs:
         working-directory: CateringService/approach_2
         env:
           DATABASE_URL: postgresql://postgres:postgrespassword@localhost:5432/caterconnect
-        run: pnpm tsx database/migrator.ts up
+        run: |
+          pnpm tsx database/migrator.ts up
+          pnpm run db:seed
 
       - name: Run E2E & Unit Test Suites
         working-directory: CateringService/approach_2
