@@ -17,9 +17,9 @@ interface ChatDrawerProps {
 }
 
 const QUICK_SUGGESTIONS = [
-  'Can we add Tirupati Special Payasam as extra sweet?',
-  'What time will the banana leaf service team arrive?',
-  'Please ensure extra ghee and podi at the dining tables.',
+  'Can we customize the dessert or sweet options?',
+  'What time will the catering service team arrive at the venue?',
+  'Please ensure extra serving staff at the dining counters.',
   'Venue parking gate directions have been noted.',
 ];
 
@@ -55,17 +55,8 @@ export const ChatDrawer: React.FC<ChatDrawerProps> = ({
           activeThread = res.thread;
           setThread(activeThread);
         } catch (fetchErr: any) {
-          console.warn('Backend chat service fetch failed, using fallback thread:', fetchErr.message);
-          // Fallback mock thread for offline/demo scenarios
-          activeThread = {
-            id: `thread-${bookingId.slice(0, 8)}`,
-            bookingId,
-            customerId: user?.id || 'demo-customer',
-            catererId: 'caterer-1',
-            lastMessageAt: new Date().toISOString(),
-            createdAt: new Date().toISOString(),
-          };
-          setThread(activeThread);
+          console.warn('Backend chat service fetch failed:', fetchErr.message);
+          setThread(null);
         }
       }
 
@@ -123,26 +114,11 @@ export const ChatDrawer: React.FC<ChatDrawerProps> = ({
         senderRole: 'customer',
       };
 
-      try {
-        const res = await apiFetch<{ message: ChatMessage }>(`/api/chat/threads/${thread.id}/messages`, {
-          method: 'POST',
-          body: JSON.stringify(payload),
-        });
-        setMessages((prev) => [...prev, res.message]);
-      } catch (postErr) {
-        // Optimistic / fallback UI update
-        const mockMsg: ChatMessage = {
-          id: `msg-${Date.now()}`,
-          threadId: thread.id,
-          senderId: user?.id || 'customer-local',
-          senderRole: 'customer',
-          message: text,
-          isRead: false,
-          createdAt: new Date().toISOString(),
-        };
-        setMessages((prev) => [...prev, mockMsg]);
-      }
-
+      const res = await apiFetch<{ message: ChatMessage }>(`/api/chat/threads/${thread.id}/messages`, {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      });
+      setMessages((prev) => [...prev, res.message]);
       setInputText('');
     } catch (err: any) {
       setError(err.message || 'Failed to send message');
@@ -188,7 +164,7 @@ export const ChatDrawer: React.FC<ChatDrawerProps> = ({
               {bookingSummary.packageName || 'Catering Feast'} ({bookingSummary.guestCount || 0} guests)
             </span>
             <span className="text-[11px] text-emerald-700 flex items-center gap-1">
-              <Clock className="h-3 w-3" /> Tirupati Coordination
+              <Clock className="h-3 w-3" /> Event Coordination
             </span>
           </div>
         )}

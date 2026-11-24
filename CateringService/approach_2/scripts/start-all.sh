@@ -4,17 +4,34 @@ set -e
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$DIR"
 
+# Automatically load environment variables from .env if present (overriding inherited shell env)
+if [ -f "$DIR/.env" ]; then
+  echo "Loading environment variables from $DIR/.env..."
+  set -a
+  source "$DIR/.env"
+  set +a
+fi
+
 echo "=== Starting CaterConnect Ecosystem ==="
 
+# Ensure libuv threadpool has 16 worker threads to prevent bcrypt/crypto starvation
+export UV_THREADPOOL_SIZE=${UV_THREADPOOL_SIZE:-16}
+
 # Cleanly free all ports if held
-fuser -k 4001/tcp 4002/tcp 4003/tcp 4004/tcp 4005/tcp 4006/tcp 8080/tcp 5173/tcp 5174/tcp 2>/dev/null || true
+fuser -k 4001/tcp 4002/tcp 4003/tcp 4004/tcp 4005/tcp 4006/tcp 8080/tcp 5173/tcp 5174/tcp 5175/tcp 2>/dev/null || true
 sleep 1
 
-export APP_DATABASE_URL="postgresql://postgres:postgres@127.0.0.1:54322/caterconnect"
-export JWT_SECRET="super-secret-jwt-token-with-at-least-32-characters-long"
-export RAZORPAY_KEY_ID="rzp_test_placeholder_key"
-export RAZORPAY_KEY_SECRET="rzp_test_placeholder_secret"
-export RAZORPAY_WEBHOOK_SECRET="caterconnect_test_webhook_secret_key"
+# Fail fast if required environment variables are missing
+if [ -z "$JWT_SECRET" ]; then
+  echo "Error: JWT_SECRET environment variable is required (min 32 chars)."
+  echo "Load your local development environment via: export \$(grep -v '^#' .env | xargs)"
+  exit 1
+fi
+
+if [ -z "$CATER_DATABASE_URL" ] && [ -z "$CATERDBURL" ] && [ -z "$APP_DATABASE_URL" ] && [ -z "$DATABASE_URL" ]; then
+  echo "Error: CATER_DATABASE_URL (or DATABASE_URL) environment variable is required."
+  exit 1
+fi
 
 TSX="$DIR/node_modules/.bin/tsx"
 mkdir -p "$DIR/logs"
@@ -51,7 +68,10 @@ echo "Starting Dedicated Frontend Applications..."
 echo "• Customer App (http://localhost:5173)"
 
 (cd "$DIR/frontend/partner" && pnpm exec vite --host 0.0.0.0 --port 5174 > "$DIR/logs/partner.log" 2>&1) &
-echo "• Partner & Admin App (http://localhost:5174)"
+echo "• Partner Caterer App (http://localhost:5174)"
+
+(cd "$DIR/frontend/admin" && pnpm exec vite --host 0.0.0.0 --port 5175 > "$DIR/logs/admin.log" 2>&1) &
+echo "• Admin Dashboard App (http://localhost:5175)"
 
 echo "=== All services launched successfully ==="
 echo "Press Ctrl+C to stop all services."

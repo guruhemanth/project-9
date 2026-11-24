@@ -1,5 +1,5 @@
 {
-  "name": "auth-service",
+  "name": "@caterconnect/auth-service",
   "version": "1.0.0",
   "type": "module",
   "scripts": {
@@ -12,9 +12,11 @@
   "dependencies": {
     "@caterconnect/shared": "workspace:*",
     "@fastify/cors": "^10.0.2",
+    "@fastify/helmet": "^13.2.0",
     "@fastify/jwt": "^9.0.4",
     "bcryptjs": "^3.0.2",
     "fastify": "^5.2.1",
+    "google-auth-library": "^11.3.3",
     "pg": "^8.13.3",
     "zod": "^3.24.2"
   },

@@ -1,0 +1,15 @@
+dish_name,category,price_rupees,is_veg,description,image_url
+Special Ghee Pongal,starter,80,veg,"Slow-cooked rice and lentils tempered with pure ghee, whole black pepper, curry leaves, and crunchy cashews.",https://images.unsplash.com/photo-1626777552726-4a6b54c97e46?auto=format&fit=crop&w=600&q=80
+Guntur Mirchi Bajji,starter,65,veg,"Crisp golden fried banana peppers stuffed with tangy spiced ajwain and lemon.",https://images.unsplash.com/photo-1601050690597-df0568f70950?auto=format&fit=crop&w=600&q=80
+Paneer Malai Tikka,starter,140,veg,"Succulent cubes of cottage cheese marinated in hung curd, heavy cream, and aromatic garam masala.",https://images.unsplash.com/photo-1567188040759-fb8a883dc6d8?auto=format&fit=crop&w=600&q=80
+Andhra Chicken 65,starter,170,non-veg,"Spicy and crunchy deep fried boneless chicken bites tossed with garlic, green chillies, and curry leaves.",https://images.unsplash.com/photo-1610057099443-fde8c4d50f91?auto=format&fit=crop&w=600&q=80
+Gutti Vankaya Kura,main,130,veg,"Traditional stuffed brinjal curry prepared in a rich peanut and sesame coconut gravy.",https://images.unsplash.com/photo-1585937421612-70a008356fbe?auto=format&fit=crop&w=600&q=80
+Paneer Butter Masala,main,150,veg,"Cottage cheese simmered in a silky tomato and cashew butter gravy.",https://images.unsplash.com/photo-1631452180519-c014fe946bc7?auto=format&fit=crop&w=600&q=80
+Mamidikaya Pappu,main,90,veg,"Tangy raw mango dal infused with mustard seed, garlic, and red chili tadka.",https://images.unsplash.com/photo-1546833999-b9f581a1996d?auto=format&fit=crop&w=600&q=80
+Gongura Mutton Curry,main,230,non-veg,"Tender mutton cooked with sour roselle leaves, onions, and Andhra rustic spices.",https://images.unsplash.com/photo-1545247181-516773cae754?auto=format&fit=crop&w=600&q=80
+Hyderabadi Veg Dum Biryani,bread_rice,160,veg,"Long grain fragrant basmati rice layered with spiced garden vegetables and saffron milk.",https://images.unsplash.com/photo-1563379091339-03b21ab4a4f8?auto=format&fit=crop&w=600&q=80
+Butter Garlic Naan,bread_rice,45,veg,"Traditional clay oven baked flatbread brushed with garlic butter.",https://images.unsplash.com/photo-1601050690117-94f5f6fa8bd7?auto=format&fit=crop&w=600&q=80
+Gulab Jamun with Rabdi,dessert,85,veg,"Warm khoya milk dumplings soaked in cardamom sugar syrup served over chilled reduced saffron milk.",https://images.unsplash.com/photo-1589301773859-bb0d43a6aa9b?auto=format&fit=crop&w=600&q=80
+Tirupati Special Kaju Laddu,dessert,95,veg,"Authentic temple-style rich cashew besan laddus with aromatic edible camphor and green cardamom.",https://images.unsplash.com/photo-1605197143984-6992d9d6d1b7?auto=format&fit=crop&w=600&q=80
+Spiced Masala Majjiga,welcome_drink,40,veg,"Refreshing churned buttermilk tempered with ginger, green chili, and roasted cumin.",https://images.unsplash.com/photo-1556881286-fc6915169721?auto=format&fit=crop&w=600&q=80
+Traditional Filter Coffee,beverage,35,veg,"Authentic chicory blended South Indian filter coffee brewed with hot frothy whole milk.",https://images.unsplash.com/photo-1514432324607-a09d9b4aefdd?auto=format&fit=crop&w=600&q=80

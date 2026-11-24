@@ -7,11 +7,19 @@ describe('Auth Service Fastify Integration', () => {
 
   beforeAll(async () => {
     await app.ready();
+    // Ensure test user exists with hashed password 'Password123!'
+    await pgPool.query(
+      `INSERT INTO auth_svc.users (id, email, password_hash, role, full_name, phone)
+       VALUES ('c0000000-0000-0000-0000-000000000001', 'customer@example.com', '$2b$10$fahpwQ2OvqBT0Wo.mHvI9.ZwzWCClnkkXRXNZI0ibk9UhGP2096N2', 'customer', 'Ramesh Kumar', '+919876543210')
+       ON CONFLICT (id) DO UPDATE SET password_hash = '$2b$10$fahpwQ2OvqBT0Wo.mHvI9.ZwzWCClnkkXRXNZI0ibk9UhGP2096N2'`
+    );
   });
 
   afterAll(async () => {
     await app.close();
-    await pgPool.end();
+    if (!(pgPool as any).ending) {
+      await pgPool.end();
+    }
   });
 
   it('responds with 200 on /health', async () => {
@@ -50,5 +58,50 @@ describe('Auth Service Fastify Integration', () => {
     expect(body.user.email || body.user.fullName).toBeDefined();
     expect(body.user.role).toBe('customer');
     expect(body.token).toBeDefined();
+    expect(body.refreshToken).toBeDefined();
+  });
+
+  it('P0-24: rotates refresh token and detects reuse', async () => {
+    // 1. Login to obtain access token & refresh token
+    const loginRes = await app.inject({
+      method: 'POST',
+      url: '/api/auth/login',
+      payload: {
+        email: 'customer@example.com',
+        password: 'Password123!',
+      },
+    });
+    expect(loginRes.statusCode).toBe(200);
+    const initialRefresh = loginRes.json().refreshToken;
+    expect(initialRefresh).toBeTruthy();
+
+    // 2. Call /api/auth/refresh with valid refresh token -> returns new access token & new refresh token
+    const refreshRes = await app.inject({
+      method: 'POST',
+      url: '/api/auth/refresh',
+      payload: { refreshToken: initialRefresh },
+    });
+    expect(refreshRes.statusCode).toBe(200);
+    const newTokens = refreshRes.json();
+    expect(newTokens.token).toBeTruthy();
+    expect(newTokens.refreshToken).toBeTruthy();
+    expect(newTokens.refreshToken).not.toBe(initialRefresh);
+
+    // 3. Attempt to reuse old initial refresh token -> triggers reuse detection & revokes family
+    const reuseRes = await app.inject({
+      method: 'POST',
+      url: '/api/auth/refresh',
+      payload: { refreshToken: initialRefresh },
+    });
+    expect(reuseRes.statusCode).toBe(401);
+    expect(reuseRes.json().error).toContain('reuse detected');
+
+    // 4. Any subsequent use of the rotated token is also rejected because family was revoked
+    const postReuseRes = await app.inject({
+      method: 'POST',
+      url: '/api/auth/refresh',
+      payload: { refreshToken: newTokens.refreshToken },
+    });
+    expect(postReuseRes.statusCode).toBe(401);
   });
 });

@@ -14,4 +14,4 @@ RUN pnpm --filter @caterconnect/api-gateway run build
 
 EXPOSE 8080
 ENV NODE_ENV=production
-CMD ["node", "backend/gateway/dist/index.js"]
+CMD ["./node_modules/.bin/tsx", "backend/gateway/src/index.ts"]

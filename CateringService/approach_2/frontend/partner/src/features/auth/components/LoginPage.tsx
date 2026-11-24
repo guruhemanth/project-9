@@ -12,14 +12,28 @@ export const LoginPage: React.FC = () => {
   const { login } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
+  const [sessionNotice, setSessionNotice] = useState<string | null>(() => {
+    const fromState = (location.state as any)?.sessionMessage;
+    if (fromState) return fromState;
+    if (typeof window !== 'undefined') {
+      const stored = sessionStorage.getItem('caterconnect_session_expired');
+      if (stored) {
+        sessionStorage.removeItem('caterconnect_session_expired');
+        return stored;
+      }
+    }
+    return null;
+  });
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
+    setSessionNotice(null);
     setSubmitting(true);
 
     try {
       const res = await loginApi({ email, password });
+      sessionStorage.removeItem('caterconnect_session_expired');
       login(res.token, res.user);
 
       const from = (location.state as any)?.from?.pathname;
@@ -43,14 +57,28 @@ export const LoginPage: React.FC = () => {
     <div className="flex min-h-[75vh] items-center justify-center px-4 py-8">
       <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-6 shadow-sm sm:p-8">
         <div className="mb-6 text-center">
-          <h2 className="text-2xl font-bold text-slate-900">Partner & Admin Sign In</h2>
-          <p className="mt-1 text-sm text-slate-600">Authorized Caterer & Platform Operations Portal</p>
+          <h2 className="text-2xl font-bold text-slate-900">Partner Sign In</h2>
+          <p className="mt-1 text-sm text-slate-600">Authorized Caterer &amp; Partner Portal</p>
         </div>
 
+        {(sessionNotice || (location.state as any)?.sessionExpired) && (
+          <div className="mb-4 flex items-start gap-2.5 rounded-xl border border-amber-300 bg-amber-50 p-3.5 text-xs text-amber-900 shadow-2xs">
+            <Lock className="h-4 w-4 shrink-0 text-amber-600 mt-0.5" />
+            <div>
+              <p className="font-semibold text-amber-950">Partner Session Expired</p>
+              <p className="mt-0.5 text-amber-800">
+                {sessionNotice ||
+                  (location.state as any)?.sessionMessage ||
+                  'Your partner session has expired. Please sign in again to resume management.'}
+              </p>
+            </div>
+          </div>
+        )}
+
         {error && (
-          <div className="mb-4 flex items-center gap-2 rounded-lg bg-red-50 p-3 text-sm text-red-700">
-            <AlertCircle className="h-4 w-4 shrink-0" />
-            <span>{error}</span>
+          <div className="mb-4 flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 p-3 text-xs text-red-700">
+            <AlertCircle className="h-4 w-4 shrink-0 mt-0.5" />
+            <span className="leading-relaxed">{error}</span>
           </div>
         )}
 
@@ -64,7 +92,7 @@ export const LoginPage: React.FC = () => {
                 required
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                placeholder="caterer@svck.com or admin@caterconnect.com"
+                placeholder="caterer@example.com"
                 className="w-full rounded-lg border border-slate-200 py-2.5 pl-9 pr-3 text-sm focus:border-amber-600 focus:outline-none focus:ring-1 focus:ring-amber-600"
               />
             </div>
@@ -95,10 +123,16 @@ export const LoginPage: React.FC = () => {
         </form>
 
         <p className="mt-6 text-center text-xs text-slate-600">
-          Want to become an approved caterer in Tirupati?{' '}
+          Want to become an approved catering partner?{' '}
           <Link to="/register" className="font-semibold text-amber-600 hover:underline">
             Register your business
           </Link>
+        </p>
+        <p className="mt-3 border-t border-slate-100 pt-3 text-center text-[11px] text-slate-500">
+          Platform Administrator?{' '}
+          <a href="http://localhost:5175" className="font-semibold text-purple-700 hover:underline">
+            Access Admin Operations (:5175)
+          </a>
         </p>
       </div>
     </div>

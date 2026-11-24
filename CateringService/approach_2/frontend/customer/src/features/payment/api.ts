@@ -20,6 +20,22 @@ export async function createPaymentOrder(bookingId: string, paymentOption: 'full
   };
 }
 
+export async function verifyPaymentSignature(payload: {
+  bookingId: string;
+  razorpayOrderId: string;
+  razorpayPaymentId: string;
+  razorpaySignature: string;
+}) {
+  return apiFetch<{
+    success: boolean;
+    message: string;
+    booking: any;
+  }>('/api/payments/verify-signature', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
 export async function simulateWebhookCaptured(_orderId: string, _paymentId = `pay_${Date.now()}`, _amountPaise = 25000) {
   // Direct test trigger or gateway pass-through
   return { success: true };

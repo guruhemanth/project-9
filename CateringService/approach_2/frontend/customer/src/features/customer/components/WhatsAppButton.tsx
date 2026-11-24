@@ -10,7 +10,7 @@ interface Props {
 export const WhatsAppButton: React.FC<Props> = ({ phone, businessName, eventDate }) => {
   const cleanPhone = phone.replace(/[^0-9]/g, '');
   const message = encodeURIComponent(
-    `Hello ${businessName}, I am contacting you regarding catering services in Tirupati${
+    `Hello ${businessName}, I am contacting you regarding your catering services on CaterConnect${
       eventDate ? ` for my event on ${eventDate}` : ''
     }.`
   );

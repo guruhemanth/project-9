@@ -119,7 +119,7 @@ CREATE TABLE IF NOT EXISTS order_svc.booking_status_history (
   booking_id uuid NOT NULL REFERENCES order_svc.bookings(id) ON DELETE CASCADE,
   from_status text,
   to_status text NOT NULL,
-  changed_by uuid,
+  changed_by text,
   note text,
   created_at timestamptz NOT NULL DEFAULT now()
 );
