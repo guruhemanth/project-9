@@ -1,6 +1,7 @@
 import React from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { Lock, X, LogIn, UserPlus } from 'lucide-react';
+import { GoogleSignInButton } from '@/features/auth/components/GoogleSignInButton';
 
 interface Props {
   catererName: string;
@@ -53,13 +54,21 @@ export const AuthRequiredModal: React.FC<Props> = ({
         </div>
 
         <div className="mt-6 space-y-2.5">
+          <GoogleSignInButton />
+
+          <div className="my-3 flex items-center gap-3">
+            <div className="h-px flex-1 bg-slate-200" />
+            <span className="text-[11px] font-medium uppercase tracking-wider text-slate-600">OR</span>
+            <div className="h-px flex-1 bg-slate-200" />
+          </div>
+
           <button
             type="button"
             onClick={handleSignIn}
             className="flex w-full items-center justify-center gap-2 rounded-xl bg-emerald-600 py-3 text-sm font-semibold text-white shadow-md hover:bg-emerald-700 transition"
           >
             <LogIn className="h-4 w-4" />
-            <span>Sign In to Continue</span>
+            <span>Sign In with Email</span>
           </button>
 
           <button
