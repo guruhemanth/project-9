@@ -312,7 +312,7 @@ export async function runMigrateDown(): Promise<void> {
 }
 
 // CLI Execution entrypoint
-const command = process.argv[2];
+const command = process.argv[2] || 'up';
 if (command === 'up') {
   runMigrateUp().catch((err) => {
     console.error(err);
