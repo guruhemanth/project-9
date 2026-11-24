@@ -191,6 +191,8 @@ jobs:
           host: ${{ secrets.SSH_HOST }}
           username: ${{ secrets.SSH_USER }}
           key: ${{ secrets.SSH_KEY }}
+          timeout: 60s
+          command_timeout: 30m
           script: |
             set -e
             echo "=== Pulling latest changes from QA branch ==="
@@ -199,7 +201,7 @@ jobs:
             git reset --hard origin/QA
             
             echo "=== Pulling latest prebuilt images from Docker Hub ==="
-            docker compose pull
+            docker compose pull --quiet || docker compose pull
             
             echo "=== Launching updated containers ==="
             docker compose up -d --remove-orphans
