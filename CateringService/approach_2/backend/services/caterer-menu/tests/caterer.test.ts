@@ -7,6 +7,12 @@ describe('Caterer & Menu Service Integration', () => {
 
   beforeAll(async () => {
     await app.ready();
+    // Ensure test package has image_url so photo gate validation passes on status approval tests
+    await pgPool.query(
+      `UPDATE caterer_svc.packages
+       SET image_url = 'https://images.unsplash.com/photo-1546069901-ba9599a7e63c'
+       WHERE caterer_id = 'd0000000-0000-0000-0000-000000000001'`
+    );
   });
 
   afterAll(async () => {
