@@ -41,7 +41,7 @@ export const PartnerPushNotificationPrompt: React.FC = () => {
       let subscription = await registration.pushManager.getSubscription();
 
       if (!subscription) {
-        const vapidPublicKey = (import.meta as any).env.VITE_VAPID_PUBLIC_KEY || 'BEl62iUYgUivxIkv69yViEuiBIa-Ib9-SkvMeAtA3LFgDzkrxZJjSgSnfckjBJuBkr3qBUYIHBQFLXYp5Nksh8U';
+        const vapidPublicKey = (import.meta as any).env.VITE_VAPID_PUBLIC_KEY || 'BFh2g8j9MZDAk3BGFrpL7lizMtBtBDiTTdEJ_eI9hvF61Zi0yMRrqHoDKj81qmU7iFa5GInDvVYPOSYy0O9VmVk';
         
         const padding = '='.repeat((4 - (vapidPublicKey.length % 4)) % 4);
         const base64 = (vapidPublicKey + padding).replace(/-/g, '+').replace(/_/g, '/');

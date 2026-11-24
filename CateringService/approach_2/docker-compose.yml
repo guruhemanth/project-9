@@ -134,6 +134,10 @@ services:
       NODE_ENV: ${NODE_ENV:-production}
       DATABASE_URL: ${COMPOSE_DATABASE_URL:-postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-CaterPG123}@postgres:5432/${POSTGRES_DB:-caterconnect}}
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-https://caterconnect.in,https://partner.caterconnect.in}
+      NOTIFY_MODE: ${NOTIFY_MODE:-live}
+      VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:-BFh2g8j9MZDAk3BGFrpL7lizMtBtBDiTTdEJ_eI9hvF61Zi0yMRrqHoDKj81qmU7iFa5GInDvVYPOSYy0O9VmVk}
+      VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-jVxpmdaCxFLraneK2eKb_rANv7kpWNmbEdIJtqzbQPw}
+      VAPID_SUBJECT: ${VAPID_SUBJECT:-mailto:support@caterconnect.in}
     depends_on:
       postgres:
         condition: service_healthy

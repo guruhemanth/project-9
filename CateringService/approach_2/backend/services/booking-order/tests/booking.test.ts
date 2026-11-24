@@ -8,6 +8,8 @@ describe('Booking & Order Service Integration', () => {
 
   beforeAll(async () => {
     await app.ready();
+    // Ensure test caterer is approved regardless of previous test runs
+    await pgPool.query("UPDATE caterer_svc.caterers SET status = 'approved' WHERE id = 'd0000000-0000-0000-0000-000000000001'");
   });
 
   afterAll(async () => {

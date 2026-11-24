@@ -25,6 +25,7 @@ import { BlackoutDateManager } from './components/BlackoutDateManager';
 import { MenuItemsManager } from './components/MenuItemsManager';
 import { CatererOrderSettings } from './components/CatererOrderSettings';
 import { BankDetailsManager } from './components/BankDetailsManager';
+import { PartnerPushNotificationPrompt } from '@/features/notifications/components/PartnerPushNotificationPrompt';
 import { PartnerChatHub } from '@/features/chat/PartnerChatHub';
 import type { Caterer, Package, PackageItem, Booking } from '@/types/database';
 
@@ -287,6 +288,9 @@ export const CatererDashboard: React.FC = () => {
           </div>
         </div>
       )}
+
+      {/* Real-time Order Alerts Push Notification Banner */}
+      <PartnerPushNotificationPrompt />
 
       {/* Missing Bank Details Warning Banner */}
       {(!caterer.bank_account_number || !caterer.bank_ifsc) && (

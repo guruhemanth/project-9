@@ -25,6 +25,7 @@ import { PaymentModal } from '@/features/payment/components/PaymentModal';
 import { ReviewModal } from '@/features/reviews/components/ReviewModal';
 import { WhatsAppButton } from '@/features/customer/components/WhatsAppButton';
 import { ChatDrawer } from '@/features/chat/ChatDrawer';
+import { PushNotificationPrompt } from '@/features/notifications/components/PushNotificationPrompt';
 import { useRealtimeUpdates } from '@/hooks/useRealtimeUpdates';
 import type { RealtimeEvent } from '@/hooks/useRealtimeUpdates';
 import type { Booking, Review } from '@/types/database';
@@ -252,6 +253,9 @@ export const CustomerBookingsList: React.FC = () => {
           </Link>
         </div>
       </div>
+
+      {/* Web Push Instant Notification Banner */}
+      <PushNotificationPrompt />
 
       {/* Filter Tabs */}
       <div className="flex items-center gap-1.5 overflow-x-auto pb-1 scrollbar-none border-b border-slate-200">
